@@ -55,6 +55,7 @@ impl ItemCollector<'_> {
 			minizinc::Item::Predicate(p) => self.collect_predicate(p),
 			minizinc::Item::Solve(s) => self.collect_solve(s),
 			minizinc::Item::TypeAlias(t) => self.collect_type_alias(t),
+			minizinc::Item::ClassDecl(_) => todo!("ClassDecl"),
 		};
 		log::debug!("Produced HIR item {:?}", it);
 		self.source_map.insert(it.into(), Origin::new(&item));

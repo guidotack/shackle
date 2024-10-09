@@ -181,6 +181,7 @@ impl ExpressionCollector<'_> {
 			minizinc::Type::SetType(s) => Type::Set {
 				inst: s.var_type(),
 				opt: s.opt_type(),
+				cardinality: s.cardinality().map(|c| self.collect_expression(c)),
 				element: self.collect_type_with_tiids(
 					s.element_type(),
 					tiids,
@@ -439,6 +440,7 @@ impl ExpressionCollector<'_> {
 					domain: self.alloc_expression(origin, ident),
 				}
 			}
+			minizinc::Domain::NewType(_) => todo!(),
 		}
 	}
 

@@ -27,6 +27,15 @@ pub enum Type {
 		/// The domain
 		domain: ArenaIndex<Expression>,
 	},
+	/// New class type
+	New {
+		/// Inst
+		inst: VarType,
+		/// Optionality
+		opt: OptType,
+		/// The domain
+		domain: ArenaIndex<Expression>,
+	},
 	/// Array type
 	Array {
 		/// Optionality
@@ -42,6 +51,8 @@ pub enum Type {
 		inst: VarType,
 		/// Optionality
 		opt: OptType,
+		/// Cardinality
+		cardinality: Option<ArenaIndex<Expression>>,
 		/// Type of element
 		element: ArenaIndex<Type>,
 	},
@@ -94,6 +105,7 @@ impl Type {
 			Type::Primitive { .. }
 			| Type::Bounded { .. }
 			| Type::AnonymousTypeInstVar { .. }
+			| Type::New { .. }
 			| Type::Missing => true,
 			Type::Array {
 				dimensions,

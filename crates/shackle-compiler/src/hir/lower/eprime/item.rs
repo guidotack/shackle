@@ -228,6 +228,7 @@ impl ItemCollector<'_> {
 						Type::Set {
 							inst: VarType::Par,
 							opt: OptType::NonOpt,
+							cardinality: None,
 							element: declared_type,
 						},
 					),

@@ -146,6 +146,10 @@
         "named": true
       },
       {
+        "type": "class_decl",
+        "named": true
+      },
+      {
         "type": "constraint",
         "named": true
       },
@@ -967,6 +971,54 @@
         "types": [
           {
             "type": "_expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "class_decl",
+    "named": true,
+    "fields": {
+      "extends": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "quoted_identifier",
+            "named": true
+          }
+        ]
+      },
+      "item": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "constraint",
+            "named": true
+          },
+          {
+            "type": "declaration",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "quoted_identifier",
             "named": true
           }
         ]
@@ -2663,6 +2715,26 @@
     }
   },
   {
+    "type": "new_type",
+    "named": true,
+    "fields": {
+      "type": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "quoted_identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "operation_type",
     "named": true,
     "fields": {
@@ -3725,6 +3797,16 @@
     "type": "set_type",
     "named": true,
     "fields": {
+      "cardinality": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "_expression",
+            "named": true
+          }
+        ]
+      },
       "opt": {
         "multiple": false,
         "required": false,
@@ -4068,6 +4150,10 @@
             "named": true
           },
           {
+            "type": "new_type",
+            "named": true
+          },
+          {
             "type": "primitive_type",
             "named": true
           },
@@ -4320,6 +4406,10 @@
     "named": false
   },
   {
+    "type": "class",
+    "named": false
+  },
+  {
     "type": "constraint",
     "named": false
   },
@@ -4353,6 +4443,10 @@
   },
   {
     "type": "enum",
+    "named": false
+  },
+  {
+    "type": "extends",
     "named": false
   },
   {
@@ -4429,6 +4523,10 @@
   },
   {
     "type": "mod",
+    "named": false
+  },
+  {
+    "type": "new",
     "named": false
   },
   {

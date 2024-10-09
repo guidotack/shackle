@@ -20,6 +20,7 @@ ast_enum!(
 	"predicate" => Predicate,
 	"annotation" => Annotation,
 	"type_alias" => TypeAlias,
+	"class_decl" => ClassDecl,
 );
 
 ast_node!(
@@ -461,6 +462,39 @@ impl TypeAlias {
 	}
 }
 
+ast_enum!(
+	/// Item in a let expression
+	ClassItem,
+	"declaration" => Declaration,
+	"constraint" => Constraint
+);
+
+ast_node!(
+	/// Class declaration item
+	ClassDecl,
+	name,
+	extends,
+	items,
+);
+
+impl ClassDecl {
+	/// The name of the class type
+	pub fn name(&self) -> Identifier {
+		child_with_field_name(self, "name")
+	}
+
+	/// The name of the base class this class extends
+	pub fn extends(&self) -> Option<Identifier> {
+		optional_child_with_field_name(self, "extends")
+	}
+	
+	/// The items of the let expression
+	pub fn items(&self) -> Children<'_, ClassItem> {
+		children_with_field_name(self, "item")
+	}
+}
+
+
 #[cfg(test)]
 mod test {
 	use expect_test::expect;
@@ -894,4 +928,176 @@ mod test {
 "#]),
 		);
 	}
+
+	#[test]
+	fn test_class_decl() {
+		check_ast(
+			r#"
+class A extends B (
+  var int: x;
+  set(0..4) of new C: bla;
+  constraint x < bla;
+);
+"#,
+			expect!([r#"
+    MznModel(
+        Model {
+            items: [
+                ClassDecl(
+                    ClassDecl {
+                        cst_kind: "class_decl",
+                        name: UnquotedIdentifier(
+                            UnquotedIdentifier {
+                                cst_kind: "identifier",
+                                name: "A",
+                            },
+                        ),
+                        extends: Some(
+                            UnquotedIdentifier(
+                                UnquotedIdentifier {
+                                    cst_kind: "identifier",
+                                    name: "B",
+                                },
+                            ),
+                        ),
+                        items: [
+                            Declaration(
+                                Declaration {
+                                    cst_kind: "declaration",
+                                    pattern: Identifier(
+                                        UnquotedIdentifier(
+                                            UnquotedIdentifier {
+                                                cst_kind: "identifier",
+                                                name: "x",
+                                            },
+                                        ),
+                                    ),
+                                    declared_type: TypeBase(
+                                        TypeBase {
+                                            cst_kind: "type_base",
+                                            var_type: Some(
+                                                Var,
+                                            ),
+                                            opt_type: None,
+                                            any_type: false,
+                                            domain: Unbounded(
+                                                UnboundedDomain {
+                                                    cst_kind: "primitive_type",
+                                                    primitive_type: Int,
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                    definition: None,
+                                    annotations: [],
+                                },
+                            ),
+                            Declaration(
+                                Declaration {
+                                    cst_kind: "declaration",
+                                    pattern: Identifier(
+                                        UnquotedIdentifier(
+                                            UnquotedIdentifier {
+                                                cst_kind: "identifier",
+                                                name: "bla",
+                                            },
+                                        ),
+                                    ),
+                                    declared_type: SetType(
+                                        SetType {
+                                            cst_kind: "set_type",
+                                            var_type: Par,
+                                            opt_type: NonOpt,
+                                            cardinality: Some(
+                                                InfixOperator(
+                                                    InfixOperator {
+                                                        cst_kind: "infix_operator",
+                                                        left: IntegerLiteral(
+                                                            IntegerLiteral {
+                                                                cst_kind: "integer_literal",
+                                                                value: Ok(
+                                                                    0,
+                                                                ),
+                                                            },
+                                                        ),
+                                                        operator: Operator {
+                                                            cst_kind: "..",
+                                                            name: "..",
+                                                        },
+                                                        right: IntegerLiteral(
+                                                            IntegerLiteral {
+                                                                cst_kind: "integer_literal",
+                                                                value: Ok(
+                                                                    4,
+                                                                ),
+                                                            },
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            element_type: TypeBase(
+                                                TypeBase {
+                                                    cst_kind: "type_base",
+                                                    var_type: None,
+                                                    opt_type: None,
+                                                    any_type: false,
+                                                    domain: NewType(
+                                                        NewType {
+                                                            cst_kind: "new_type",
+                                                            name: UnquotedIdentifier(
+                                                                UnquotedIdentifier {
+                                                                    cst_kind: "identifier",
+                                                                    name: "C",
+                                                                },
+                                                            ),
+                                                        },
+                                                    ),
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                    definition: None,
+                                    annotations: [],
+                                },
+                            ),
+                            Constraint(
+                                Constraint {
+                                    cst_kind: "constraint",
+                                    expression: InfixOperator(
+                                        InfixOperator {
+                                            cst_kind: "infix_operator",
+                                            left: Identifier(
+                                                UnquotedIdentifier(
+                                                    UnquotedIdentifier {
+                                                        cst_kind: "identifier",
+                                                        name: "x",
+                                                    },
+                                                ),
+                                            ),
+                                            operator: Operator {
+                                                cst_kind: "<",
+                                                name: "<",
+                                            },
+                                            right: Identifier(
+                                                UnquotedIdentifier(
+                                                    UnquotedIdentifier {
+                                                        cst_kind: "identifier",
+                                                        name: "bla",
+                                                    },
+                                                ),
+                                            ),
+                                        },
+                                    ),
+                                    annotations: [],
+                                },
+                            ),
+                        ],
+                    },
+                ),
+            ],
+        },
+    )
+"#]),
+		);
+	}	
 }

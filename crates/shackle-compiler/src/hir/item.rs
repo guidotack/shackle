@@ -183,6 +183,32 @@ pub struct Declaration {
 	pub annotations: Box<[ArenaIndex<Expression>]>,
 }
 
+/// A class declaration item
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct Class {
+	/// Pattern being declared (always an identifier)
+	pub pattern: ArenaIndex<Pattern>,
+	/// The base class
+	pub extends: Option<ArenaIndex<Expression>>,
+	/// Class items
+	pub items: Box<[ClassItem]>,	
+	/// Annotations
+	pub annotations: Box<[ArenaIndex<Expression>]>,
+}
+
+/// Item in a let expression
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum ClassItem {
+	/// A declaration
+	Declaration(Declaration),
+	/// A constraint
+	Constraint(Constraint),
+}
+
+impl_enum_from!(ClassItem::Declaration);
+impl_enum_from!(ClassItem::Constraint);
+
+
 /// A constructor atom or function for an enum or annotations
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum Constructor {
