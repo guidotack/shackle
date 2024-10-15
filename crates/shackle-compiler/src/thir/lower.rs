@@ -115,6 +115,7 @@ impl<'a> ItemCollector<'a> {
 			}
 			LocalItemRef::Solve(s) => self.collect_solve(item, &model[s]),
 			LocalItemRef::TypeAlias(t) => self.collect_type_alias(item, &model[t]),
+			LocalItemRef::Class(_) => { todo!()}
 		}
 	}
 

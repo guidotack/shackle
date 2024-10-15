@@ -26,6 +26,7 @@ impl Format for minizinc::Item {
 			minizinc::Item::Predicate(x) => x.format(formatter),
 			minizinc::Item::Solve(x) => x.format(formatter),
 			minizinc::Item::TypeAlias(x) => x.format(formatter),
+			minizinc::Item::ClassDecl(x) => todo!(),
 		};
 		elements.push(element);
 		elements.push(Element::text(";"));

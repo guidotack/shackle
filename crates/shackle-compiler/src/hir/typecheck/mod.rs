@@ -36,10 +36,12 @@ use std::{
 	sync::Arc,
 };
 
+use rustc_hash::FxHashMap;
+
 use super::{
 	db::Hir,
 	ids::{ExpressionRef, ItemRef, LocalItemRef, PatternRef},
-	Expression, ItemData, Pattern,
+	Expression, Identifier, ItemData, Pattern,
 };
 use crate::{
 	ty::{FunctionEntry, Ty, TyData, TyVar},
@@ -418,7 +420,7 @@ pub fn collect_item_body(db: &dyn Hir, item: ItemRef) -> (Arc<BodyTypes>, Arc<Ve
 }
 
 /// Type of a pattern (usually a declaration)
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PatternTy {
 	/// Pattern is a variable declaration.
 	Variable(Ty),
@@ -476,6 +478,8 @@ pub enum PatternTy {
 		/// The type of the destructor function
 		destructor: Ty,
 	},
+	/// Class declaration
+	ClassDecl(Ty),
 	/// Currently computing - if encountered, indicates a cycle
 	Computing,
 }
@@ -540,6 +544,7 @@ impl<'a> DebugPrint<'a> for PatternTy {
 					destructor.pretty_print(db.upcast())
 				)
 			}
+			PatternTy::ClassDecl(c) => c.pretty_print(db.upcast()),
 			PatternTy::Computing => "{computing}".to_owned(),
 		}
 	}

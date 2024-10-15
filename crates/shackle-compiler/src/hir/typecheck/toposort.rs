@@ -291,6 +291,14 @@ impl<'a> TopoSorter<'a> {
 				}
 				self.current.remove(&p);
 			}
+			LocalItemRef::Class(c) => {
+				let p = PatternRef::new(item, model[c].pattern);
+				self.current.insert(p);
+				if let Some(base) = model[c].extends {
+					self.visit_expression(ExpressionRef::new(item, base), None);
+				}
+				self.current.remove(&p);
+			}
 		}
 		self.sorted.push(item);
 	}

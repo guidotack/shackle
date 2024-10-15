@@ -9,13 +9,10 @@ use super::{EnumConstructorEntry, PatternTy, TypeCompletionMode, TypeContext, Ty
 use crate::{
 	diagnostics::{SyntaxError, TypeInferenceFailure, TypeMismatch},
 	hir::{
-		db::Hir,
-		ids::{EntityRef, ExpressionRef, ItemRef, LocalItemRef, NodeRef, PatternRef},
-		Constructor, ConstructorParameter, EnumConstructor, Goal, ItemData, Pattern, Type,
+		db::Hir, ids::{EntityRef, ExpressionRef, ItemRef, LocalItemRef, NodeRef, PatternRef}, ClassItem, Constructor, ConstructorParameter, EnumConstructor, Goal, ItemData, Pattern, Type
 	},
 	ty::{
-		EnumRef, FunctionEntry, FunctionType, OverloadedFunction, PolymorphicFunctionType, Ty,
-		TyData, TyVar, TyVarRef,
+		ClassRef, EnumRef, FunctionEntry, FunctionType, OverloadedFunction, PolymorphicFunctionType, Ty, TyData, TyVar, TyVarRef
 	},
 	Error,
 };
@@ -440,6 +437,59 @@ impl SignatureTypeContext {
 					},
 				);
 			}
+			LocalItemRef::Class(c) => {
+				let itemref = item;
+				let it = &model[c];
+				let pat = PatternRef::new(item, it.pattern);
+				let tys = db.type_registry();
+				// Create empty class decl type
+				let mut class_decl_type = ClassRef::new(db, pat);
+
+				self.add_declaration(pat, PatternTy::Computing);
+
+				if let Some(base) = it.extends {
+					let mut typer = Typer::new(db, self, itemref, data);
+					let base_type = typer.collect_expression(base);
+					if let Some(_) = base_type.class_type(db.upcast()) {
+						class_decl_type.superclass = Some(base_type);
+					} else {
+						let (src, span) = NodeRef::from(EntityRef::new(db, item, base)).source_span(db);
+						self.add_diagnostic(
+							item,
+							TypeMismatch {
+								src,
+								span,
+								msg: format!(
+									"Expected class, but got '{}'",
+									base_type.pretty_print(db.upcast())
+								),
+							},
+						);
+					}
+				}
+
+				self.add_declaration(pat, PatternTy::ClassDecl(Ty::class(db.upcast(), class_decl_type.clone())));
+
+				for item in it.items.iter() {
+					match item {
+						ClassItem::Constraint(c) => {
+							let mut typer = Typer::new(db, self, itemref, data);
+							for ann in c.annotations.iter() {
+								typer.typecheck_expression(*ann, tys.ann);
+							}
+							typer.typecheck_expression(c.expression, tys.var_bool);
+						}
+						ClassItem::Declaration(d) => {
+							let mut typer = Typer::new(db, self, itemref, data);
+							let ty = typer.collect_declaration(d);
+							class_decl_type.attributes.push((PatternRef::new(itemref, d.pattern).identifier(db).unwrap(), ty));
+							self.add_declaration(pat, PatternTy::ClassDecl(Ty::class(db.upcast(), class_decl_type.clone())));
+						}
+					}
+				}			
+
+				self.add_declaration(pat, PatternTy::ClassDecl(Ty::class(db.upcast(), class_decl_type)));
+			}
 			_ => unreachable!("Item {:?} does not have signature", it),
 		}
 	}
@@ -633,7 +683,7 @@ impl TypeContext for SignatureTypeContext {
 	fn add_declaration(&mut self, pattern: PatternRef, declaration: PatternTy) {
 		let old = self.data.patterns.insert(pattern, declaration);
 		assert!(
-			matches!(old, None | Some(PatternTy::Computing)),
+			matches!(old, None | Some(PatternTy::Computing | PatternTy::ClassDecl(_))),
 			"Tried to add declaration for {:?} twice",
 			pattern
 		);

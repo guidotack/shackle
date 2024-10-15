@@ -137,6 +137,10 @@ impl Ty {
 		db.intern_ty(TyData::TyVar(None, None, t))
 	}
 
+	pub fn class(db: &dyn Interner, class_ref: ClassRef) -> Self {
+		db.intern_ty(TyData::Class(VarType::Par, OptType::NonOpt, class_ref))
+	}
+
 	/// Sets the inst of this type if possible.
 	///
 	/// Some types e.g. var arrays are not possible.
@@ -212,6 +216,7 @@ impl Ty {
 			TyData::Integer(i, _) => TyData::Integer(i, opt),
 			TyData::Float(i, _) => TyData::Float(i, opt),
 			TyData::Enum(i, _, e) => TyData::Enum(i, opt, e),
+			TyData::Class(i, _, c) => TyData::Class(i, opt, c),
 			TyData::String(_) => TyData::String(opt),
 			TyData::Annotation(_) => TyData::Annotation(opt),
 			TyData::Bottom(_) => TyData::Bottom(opt),
@@ -312,6 +317,18 @@ impl Ty {
 				TyData::TyVar(_, Some(OptType::NonOpt), t) => t.indexable,
 				_ => false,
 			}
+	}
+
+	pub fn is_class(&self, db: &dyn Interner) -> bool {
+		matches!(self.lookup(db), TyData::Class(_, _, _))
+	}
+
+	pub fn class_type(&self, db: &dyn Interner) -> Option<ClassRef> {
+		if let TyData::Class(_, _, c) = self.lookup(db) {
+			Some(c)
+		} else {
+			None
+		}
 	}
 
 	/// Whether this type-inst has a default value (allowing omission of else branch in ITE)
@@ -1042,6 +1059,7 @@ impl Ty {
 				| (TyData::Bottom(o1), TyData::Tuple(o2, _))
 				| (TyData::Bottom(o1), TyData::Record(o2, _))
 				| (TyData::Bottom(o1), TyData::Function(o2, _))
+				| (TyData::Bottom(o1), TyData::Class(_, o2, _))
 				| (TyData::String(o1), TyData::String(o2))
 				| (TyData::Annotation(o1), TyData::Annotation(o2)) => {
 					if o1 != OptType::NonOpt && o1 != o2 {
@@ -1111,6 +1129,14 @@ impl Ty {
 					if o1 != OptType::NonOpt && Some(o1) != o2 {
 						return false;
 					}
+				}
+				(TyData::Class(var1, opt1, class1), TyData::Class(var2, opt2, class2)) => {
+					if var1 != VarType::Par && var1 != var2
+					|| opt1 != OptType::NonOpt && opt1 != opt2
+					{
+						return false;
+					}
+					return class1.is_subclass_of(db, &class2);
 				}
 				_ => return false,
 			}
@@ -1196,6 +1222,13 @@ impl Ty {
 				.into_iter()
 				.chain(o.pretty_print())
 				.chain([e.pretty_print(db)])
+				.collect::<Vec<_>>()
+				.join(" "),
+			TyData::Class(i, o, c) => i
+				.pretty_print()
+				.into_iter()
+				.chain(o.pretty_print())
+				.chain([c.pretty_print(db)])
 				.collect::<Vec<_>>()
 				.join(" "),
 			TyData::String(o) => o
@@ -1308,6 +1341,8 @@ pub enum TyData {
 	Float(VarType, OptType),
 	/// Enumerated type scalar
 	Enum(VarType, OptType, EnumRef),
+	/// Object of class type
+	Class(VarType, OptType, ClassRef),
 
 	/// String scalar
 	String(OptType),
@@ -1416,6 +1451,63 @@ impl EnumRef {
 	pub fn pretty_print(&self, db: &dyn Interner) -> String {
 		db.lookup_intern_newtype(self.0).name.value(db)
 	}
+}
+
+/// The type of an class object value
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct ClassRef {
+	/// The newtype for this class
+	newtype: NewType,
+	/// Map from class attribute identifiers to their types and origin class
+	pub attributes: Vec<(Identifier, Ty)>,
+	/// List of superclasses
+	pub superclass: Option<Ty>,
+}
+
+impl ClassRef {
+	/// Create a new enum
+	pub fn new(db: &dyn Hir, pattern: PatternRef) -> Self {
+		Self { newtype: NewType::from_pattern(db, pattern), attributes: vec![], superclass: None }
+	}
+
+	/// Get pattern reference
+	pub fn pattern(&self, db: &dyn Interner) -> PatternRef {
+		match db.lookup_intern_newtype(self.newtype).kind {
+			NewTypeKind::Pattern(p) => p,
+			_ => panic!("ClassRef is not a pattern"),
+		}
+	}
+
+	/// Get the name of this class
+	pub fn name(&self, db: &dyn Interner) -> InternedString {
+		db.lookup_intern_newtype(self.newtype).name
+	}
+
+	/// Get the human readable name of this class
+	pub fn pretty_print(&self, db: &dyn Interner) -> String {
+		db.lookup_intern_newtype(self.newtype).name.value(db)
+	}
+
+	/// Get iterator over all superclasses of this class (including the class itself)
+	pub fn superclasses<'a>(&self, db: &'a dyn Interner) -> impl Iterator<Item = ClassRef> +'a {
+		
+		let mut cur_class = Some(self.clone());
+		std::iter::from_fn( move || {
+			if let Some(class) = cur_class.take() {
+				cur_class = class.superclass.and_then(|s| s.class_type(db));
+				return Some(class);
+			}
+			return None;
+		})
+	}
+
+	/// Test if this is a subclass of other
+	pub fn is_subclass_of(&self, db: &dyn Interner, other: &ClassRef) -> bool {
+		self.superclasses(db).any(|c| c == *other)
+	}
+
+
+
 }
 
 /// The type of a reference to a type-inst var

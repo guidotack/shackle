@@ -237,6 +237,7 @@ impl<'a, T: TypeContext> Typer<'a, T> {
 					// Error will be emitted during topological sorting
 					return self.types.error;
 				}
+				PatternTy::ClassDecl(c) => { return c; }
 				pattern_ty => {
 					unreachable!(
 						"Matched variable in scope, but not a variable or type alias ({:?})",
@@ -1266,6 +1267,56 @@ impl<'a, T: TypeContext> Typer<'a, T> {
 					self.types.error
 				}
 			},
+			TyData::Class(var_type, opt_type, class_ref) => {
+				let name = class_ref.name(db.upcast());
+				let mut c = Some(class_ref);
+				while let Some(cr) = c {
+					eprintln!("Check class {:?}", cr);
+					for (name, ty) in cr.attributes.iter() {
+						eprintln!("  check attr {:?}", name.pretty_print(db));
+						if *name == ra.field {
+							let mut result_ty = *ty;
+							if let OptType::Opt = opt_type {
+								result_ty = result_ty.make_opt(db.upcast());
+							}
+							if let VarType::Var = var_type {
+								result_ty = result_ty.make_var(db.upcast()).unwrap_or_else(|| {
+									let (src, span) =
+										NodeRef::from(EntityRef::new(db, self.item, expr))
+											.source_span(db);
+									self.ctx.add_diagnostic(
+										self.item,
+										IllegalType {
+											src,
+											span,
+											ty: format!("var {}", result_ty.pretty_print(db.upcast())),
+										},
+									);
+									self.types.error
+								});
+							}
+							return result_ty;
+						}
+					}
+
+					c = cr.superclass.and_then(|base| base.class_type(db.upcast()));
+				}
+				let (src, span) =
+								NodeRef::from(EntityRef::new(db, self.item, expr)).source_span(db);
+				self.ctx.add_diagnostic(
+					self.item,
+					InvalidFieldAccess {
+						src,
+						span,
+						msg: format!(
+							"No such field {} for '{}'",
+							ra.field.pretty_print(db),
+							db.lookup_intern_string(name).0
+						),
+					},
+				);
+				self.types.error
+			}
 			TyData::Error => self.types.error,
 			_ => {
 				let (src, span) =
@@ -2392,6 +2443,9 @@ supported in operation types."
 									*has_unbounded = true;
 									Ty::type_inst_var(db.upcast(), t)
 								}
+								PatternTy::ClassDecl(c) => {
+									c
+								}
 								PatternTy::Computing => {
 									// Error will be emitted during topological sorting
 									return self.types.error;
@@ -2510,7 +2564,7 @@ supported in operation types."
 				});
 				ty.with_opt(db.upcast(), *opt)
 			}
-			Type::Set { inst, opt, element } => {
+			Type::Set { inst, opt, cardinality, element } => {
 				let e_ty = match ty.map(|ty| ty.lookup(db.upcast())) {
 					Some(TyData::Set(_, _, element)) => Some(element),
 					_ => None,
@@ -2529,6 +2583,9 @@ supported in operation types."
 					);
 					self.types.error
 				});
+				if let Some(card) = cardinality {
+					self.typecheck_expression(*card, self.types.set_of_int);
+				}
 				ty.with_inst(db.upcast(), *inst)
 					.unwrap_or_else(|| {
 						let (src, span) =
@@ -2734,6 +2791,72 @@ supported in operation types."
 					ty = ty.with_opt(db.upcast(), *opt);
 				}
 				ty
+			}
+			Type::New { inst, opt, domain } => {
+				let mut ty = match &self.data[*domain] {
+					Expression::Identifier(i) => {
+						if let Some(p) = self.find_variable(*domain, *i) {
+							let domain_ref = ExpressionRef::new(self.item, *domain);
+							self.ctx.add_identifier_resolution(domain_ref, p);
+							match self.ctx.type_pattern(db, p) {
+								PatternTy::ClassDecl(c) => {
+									c
+								}
+								PatternTy::Computing => {
+									// Error will be emitted during topological sorting
+									return self.types.error;
+								}
+								_ => {
+									let (src, span) =
+										NodeRef::from(EntityRef::new(db, self.item, t))
+											.source_span(db);
+									self.ctx.add_diagnostic(
+										self.item,
+										TypeMismatch {
+											src,
+											span,
+											msg: "Expected a class name.".to_owned(),
+										},
+									);
+									return self.types.error;
+								}
+							}
+						} else {
+							let (src, span) = NodeRef::from(EntityRef::new(db, self.item, *domain))
+								.source_span(db);
+							self.ctx.add_diagnostic(
+								self.item,
+								UndefinedIdentifier {
+									identifier: i.pretty_print(db),
+									src,
+									span,
+								},
+							);
+							return self.types.error;
+						}
+					}
+					_ => unreachable!()
+				};
+				ty = ty.with_inst(db.upcast(), *inst).unwrap_or_else(|| {
+					let (src, span) =
+						NodeRef::from(EntityRef::new(db, self.item, *domain)).source_span(db);
+					self.ctx.add_diagnostic(
+						self.item,
+						IllegalType {
+							src,
+							span,
+							ty: inst
+								.pretty_print()
+								.into_iter()
+								.chain([ty.pretty_print(db.upcast())])
+								.collect::<Vec<_>>()
+								.join(" "),
+						},
+					);
+					self.types.error
+				});
+				ty = ty.with_opt(db.upcast(), *opt);
+				ty				
 			}
 			Type::Any => {
 				*has_unbounded = true;

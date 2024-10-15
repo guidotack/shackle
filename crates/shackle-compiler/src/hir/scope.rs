@@ -7,7 +7,7 @@ use std::{collections::hash_map::Entry, fmt::Debug, sync::Arc};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::{Constructor, EnumConstructor, Generator, MaybeIndexSet};
+use super::{ClassItem, Constructor, EnumConstructor, Generator, MaybeIndexSet};
 use crate::{
 	diagnostics::{IdentifierAlreadyDefined, IdentifierShadowing, InvalidPattern},
 	hir::{
@@ -207,6 +207,22 @@ pub fn collect_global_scope(db: &dyn Hir) -> (Arc<ScopeData>, Arc<Vec<Error>>) {
 				_ => unreachable!("Type-alias must have identifier pattern"),
 			}
 		}
+		for (i, t) in model.classdecls.iter() {
+			match &t.data[t.pattern] {
+				Pattern::Identifier(identifier) => {
+					if let Err(e) = scope.add_variable(
+						db,
+						*identifier,
+						0,
+						PatternRef::new(ItemRef::new(db, *m, i), t.pattern),
+					) {
+						diagnostics.push(e);
+					}
+				}
+				_ => unreachable!("Class declaration must have identifier pattern"),
+			}
+		}
+
 	}
 	log::info!(
 		"{} atoms, {} variables, {} function names in global scope",
@@ -1069,6 +1085,38 @@ pub fn collect_item_scope(db: &dyn Hir, item: ItemRef) -> ScopeCollectorResult {
 				collector.collect_expression(*ann);
 			}
 			collector.collect_type(type_alias.aliased_type);
+			collector.finish()
+		}
+		LocalItemRef::Class(c) => {
+			let class = &model[c];
+			let mut collector = ScopeCollector::new(db, item, class.data.as_ref());
+			if let Some(base) = class.extends {
+				collector.collect_expression(base);
+			}
+			collector.push();
+			let Scope::Local {scope,.. } = &mut collector.scopes[collector.current] else {unreachable!()};
+			scope.add_variable(db, Identifier::new("this", db), 0, PatternRef::new(item, class.pattern)).unwrap();
+			for class_item in class.items.iter() {
+				match class_item {
+					ClassItem::Constraint(c) => {
+						for e in c.annotations.iter() {
+							collector.collect_expression(*e);
+						}
+						collector.collect_expression(c.expression);
+					}
+					ClassItem::Declaration(d) => {
+						for e in d.annotations.iter() {
+							collector.collect_expression(*e);
+						}
+						collector.collect_type(d.declared_type);
+						if let Some(def) = d.definition {
+							collector.collect_expression(def)
+						}
+						collector.collect_pattern(d.pattern, true);
+					}
+				}
+			}
+			collector.pop();
 			collector.finish()
 		}
 	}

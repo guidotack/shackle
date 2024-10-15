@@ -55,7 +55,7 @@ impl ItemCollector<'_> {
 			minizinc::Item::Predicate(p) => self.collect_predicate(p),
 			minizinc::Item::Solve(s) => self.collect_solve(s),
 			minizinc::Item::TypeAlias(t) => self.collect_type_alias(t),
-			minizinc::Item::ClassDecl(_) => todo!("ClassDecl"),
+			minizinc::Item::ClassDecl(c) => self.collect_classdecl(c),
 		};
 		log::debug!("Produced HIR item {:?}", it);
 		self.source_map.insert(it.into(), Origin::new(&item));
@@ -485,6 +485,27 @@ impl ItemCollector<'_> {
 				name,
 				aliased_type,
 				annotations,
+			},
+			data,
+		));
+		self.model.items.push(index.into());
+		(ItemRef::new(self.db, self.owner, index), source_map)
+	}
+
+	fn collect_classdecl(&mut self, t: minizinc::ClassDecl) -> (ItemRef, ItemDataSourceMap) {
+		let mut ctx = ExpressionCollector::new(self.db, self.identifiers, &mut self.diagnostics);
+		let pattern = ctx.collect_pattern(t.name().into());
+		let extends = t.extends().map(|e| ctx.collect_expression(e.into()));
+		let items = t
+			.items()
+			.map(|f| ctx.collect_class_item(f))
+			.collect();
+		let (data, source_map) = ctx.finish();
+		let index = self.model.classdecls.insert(Item::new(
+			Class {
+				pattern,
+				extends,
+				items
 			},
 			data,
 		));

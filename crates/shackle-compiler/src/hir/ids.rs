@@ -5,7 +5,7 @@ use std::sync::Arc;
 use miette::SourceSpan;
 
 use super::{
-	db::Hir, Annotation, Assignment, Constraint, Declaration, EnumAssignment, Enumeration,
+	db::Hir, Annotation, Assignment, Class, Constraint, Declaration, EnumAssignment, Enumeration,
 	Expression, Function, Identifier, Item, ItemData, Model, Output, Pattern, Solve, Type,
 	TypeAlias,
 };
@@ -37,6 +37,8 @@ pub enum LocalItemRef {
 	Solve(ArenaIndex<Item<Solve>>),
 	/// Type alias item ID
 	TypeAlias(ArenaIndex<Item<TypeAlias>>),
+	/// Class declaration item ID
+	Class(ArenaIndex<Item<Class>>),
 }
 
 impl LocalItemRef {
@@ -53,6 +55,7 @@ impl LocalItemRef {
 			LocalItemRef::Output(i) => &model[i].data,
 			LocalItemRef::Solve(i) => &model[i].data,
 			LocalItemRef::TypeAlias(i) => &model[i].data,
+			LocalItemRef::Class(i) => &model[i].data,
 		}
 	}
 }
@@ -67,6 +70,7 @@ impl_enum_from!(LocalItemRef::Function(ArenaIndex<Item<Function>>));
 impl_enum_from!(LocalItemRef::Output(ArenaIndex<Item<Output>>));
 impl_enum_from!(LocalItemRef::Solve(ArenaIndex<Item<Solve>>));
 impl_enum_from!(LocalItemRef::TypeAlias(ArenaIndex<Item<TypeAlias>>));
+impl_enum_from!(LocalItemRef::Class(ArenaIndex<Item<Class>>));
 
 /// Global reference to an item.
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
@@ -111,6 +115,7 @@ impl<'a> DebugPrint<'a> for ItemRef {
 			LocalItemRef::Output(i) => model[i].debug_print(db),
 			LocalItemRef::Solve(i) => model[i].debug_print(db),
 			LocalItemRef::TypeAlias(i) => model[i].debug_print(db),
+			LocalItemRef::Class(i) => model[i].debug_print(db),
 		}
 	}
 }

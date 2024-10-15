@@ -72,6 +72,8 @@ pub struct Model {
 	pub solves: Arena<Item<Solve>>,
 	/// Type alias items
 	pub type_aliases: Arena<Item<TypeAlias>>,
+	/// Class declarations
+	pub classdecls: Arena<Item<Class>>,
 }
 
 impl_index!(Model[self, index: ArenaIndex<Item<Annotation>>] -> Item<Annotation> { self.annotations[index] });
@@ -84,3 +86,4 @@ impl_index!(Model[self, index: ArenaIndex<Item<Function>>] -> Item<Function> { s
 impl_index!(Model[self, index: ArenaIndex<Item<Output>>] -> Item<Output> { self.outputs[index] });
 impl_index!(Model[self, index: ArenaIndex<Item<Solve>>] -> Item<Solve> { self.solves[index] });
 impl_index!(Model[self, index: ArenaIndex<Item<TypeAlias>>] -> Item<TypeAlias> { self.type_aliases[index] });
+impl_index!(Model[self, index: ArenaIndex<Item<Class>>] -> Item<Class> { self.classdecls[index] });

@@ -192,8 +192,6 @@ pub struct Class {
 	pub extends: Option<ArenaIndex<Expression>>,
 	/// Class items
 	pub items: Box<[ClassItem]>,	
-	/// Annotations
-	pub annotations: Box<[ArenaIndex<Expression>]>,
 }
 
 /// Item in a let expression

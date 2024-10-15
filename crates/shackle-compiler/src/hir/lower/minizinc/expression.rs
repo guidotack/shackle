@@ -440,7 +440,13 @@ impl ExpressionCollector<'_> {
 					domain: self.alloc_expression(origin, ident),
 				}
 			}
-			minizinc::Domain::NewType(_) => todo!(),
+			minizinc::Domain::NewType(e) => {
+				Type::New {
+					inst: b.var_type().unwrap_or(VarType::Par),
+					opt: b.opt_type().unwrap_or(OptType::NonOpt),
+					domain: self.collect_expression(e.name().into()),
+				}
+			}
 		}
 	}
 
@@ -792,6 +798,32 @@ impl ExpressionCollector<'_> {
 				.into()
 			}
 			minizinc::LetItem::Constraint(c) => Constraint {
+				expression: self.collect_expression(c.expression()),
+				annotations: c
+					.annotations()
+					.map(|ann| self.collect_expression(ann))
+					.collect(),
+			}
+			.into(),
+		}
+	}
+
+	pub fn collect_class_item(&mut self, i: minizinc::ClassItem) -> ClassItem {
+		match i {
+			minizinc::ClassItem::Declaration(d) => {
+				let declared_type = self.collect_type(d.declared_type());
+				Declaration {
+					pattern: self.collect_pattern(d.pattern()),
+					definition: d.definition().map(|def| self.collect_expression(def)),
+					declared_type,
+					annotations: d
+						.annotations()
+						.map(|ann| self.collect_expression(ann))
+						.collect(),
+				}
+				.into()
+			}
+			minizinc::ClassItem::Constraint(c) => Constraint {
 				expression: self.collect_expression(c.expression()),
 				annotations: c
 					.annotations()

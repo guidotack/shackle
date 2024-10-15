@@ -176,6 +176,7 @@ impl BodyTypeContext {
 					typer.typecheck_expression(*ann, types.ann);
 				}
 			}
+			LocalItemRef::Class(_) => {}
 		}
 	}
 

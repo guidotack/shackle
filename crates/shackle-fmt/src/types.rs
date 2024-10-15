@@ -4,7 +4,7 @@ use shackle_compiler::{
 		minizinc::{self, RecordField},
 	},
 	ty::{OptType, VarType},
-	utils::maybe_grow_stack,
+	utils::{maybe_grow_stack, pretty_print_identifier},
 };
 
 use crate::{
@@ -61,6 +61,7 @@ impl Format for minizinc::Domain {
 			minizinc::Domain::TypeInstEnumIdentifier(t) => Element::text(t.name()),
 			minizinc::Domain::TypeInstIdentifier(t) => Element::text(t.name()),
 			minizinc::Domain::Unbounded(u) => Element::text(u.cst_text()),
+			minizinc::Domain::NewType(n) => Element::sequence([Element::text("new "), Element::text(pretty_print_identifier(&n.name().name()))]),
 		};
 		formatter.attach_comments(self, vec![e])
 	}
