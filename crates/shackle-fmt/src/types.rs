@@ -61,7 +61,10 @@ impl Format for minizinc::Domain {
 			minizinc::Domain::TypeInstEnumIdentifier(t) => Element::text(t.name()),
 			minizinc::Domain::TypeInstIdentifier(t) => Element::text(t.name()),
 			minizinc::Domain::Unbounded(u) => Element::text(u.cst_text()),
-			minizinc::Domain::NewType(n) => Element::sequence([Element::text("new "), Element::text(pretty_print_identifier(&n.name().name()))]),
+			minizinc::Domain::NewType(n) => Element::sequence([
+				Element::text("new "),
+				Element::text(pretty_print_identifier(&n.name().name())),
+			]),
 		};
 		formatter.attach_comments(self, vec![e])
 	}

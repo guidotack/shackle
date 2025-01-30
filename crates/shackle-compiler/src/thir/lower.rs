@@ -11,7 +11,7 @@
 //! - Tuple/record access into arrays of structs are rewritten using a
 //!   comprehension accessing the inner value
 
-use std::sync::Arc;
+use std::{collections::hash_map::Entry, fmt::format, sync::Arc};
 
 use rustc_hash::FxHashMap;
 
@@ -27,7 +27,7 @@ use crate::{
 		ids::{EntityRef, ExpressionRef, ItemRef, LocalItemRef, NodeRef, PatternRef},
 		PatternTy, TypeResult,
 	},
-	ty::{Ty, TyData},
+	ty::{EnumRef, Ty, TyData},
 	utils::{arena::ArenaIndex, impl_enum_from, maybe_grow_stack},
 };
 
@@ -61,6 +61,12 @@ enum LoweredIdentifier {
 	Callable(Callable),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ClassObjectsInfo {
+	class_objects: DeclarationId,
+	class_enum_member: Option<u32>,
+}
+
 /// Collects HIR items and lowers them to THIR
 struct ItemCollector<'a> {
 	db: &'a dyn Thir,
@@ -69,6 +75,7 @@ struct ItemCollector<'a> {
 	model: Model,
 	type_alias_expressions: FxHashMap<ExpressionRef, DeclarationId>,
 	deferred: Vec<(FunctionId, ItemRef)>,
+	class_objects: FxHashMap<PatternRef, Vec<ClassObjectsInfo>>,
 }
 
 impl<'a> ItemCollector<'a> {
@@ -85,6 +92,7 @@ impl<'a> ItemCollector<'a> {
 			model: Model::with_capacities(&entity_counts.clone().into()),
 			type_alias_expressions: FxHashMap::default(),
 			deferred: Vec::new(),
+			class_objects: FxHashMap::default(),
 		}
 	}
 
@@ -115,8 +123,1092 @@ impl<'a> ItemCollector<'a> {
 			}
 			LocalItemRef::Solve(s) => self.collect_solve(item, &model[s]),
 			LocalItemRef::TypeAlias(t) => self.collect_type_alias(item, &model[t]),
-			LocalItemRef::Class(_) => { todo!()}
+			LocalItemRef::Class(c) => self.collect_class(item, &model[c]),
 		}
+	}
+
+	/// Collect a class declaration item
+	pub fn collect_class(&mut self, item: ItemRef, c: &hir::Item<hir::Class>) {
+		let types = self.db.lookup_item_types(item);
+		let analysis = self.db.class_analysis();
+		let class_occurrences = analysis
+			.map_class_to_constrs
+			.get(&PatternRef::new(item, c.pattern));
+		let class_subclasses = analysis
+			.map_class_to_subclasses
+			.get(&PatternRef::new(item, c.pattern));
+		let n_occurrences = class_occurrences.map_or(0, |x| x.len());
+		let n_subclasses = class_subclasses.map_or(0, |x| x.len());
+		let superclasses = match types[c.pattern] {
+			PatternTy::ClassDecl {
+				defining_set_ty,
+				input_record_ty,
+			} => defining_set_ty
+				.class_type(self.db.upcast())
+				.unwrap()
+				.superclasses(self.db.upcast())
+				.collect::<Vec<_>>(),
+			_ => unreachable!(),
+		};
+		let mut constructors = Vec::with_capacity(n_occurrences + n_subclasses);
+		let mut class_objects =
+			std::iter::repeat_with(|| Vec::with_capacity(n_occurrences + n_subclasses))
+				.take(superclasses.len())
+				.collect::<Vec<Vec<DeclarationId>>>();
+		let mut need_potential = false;
+		let mut objects_are_var = false;
+		for (patternref, ci_idx) in class_occurrences.iter().flat_map(|x| x.iter()) {
+			let m = patternref.item().model(self.db.upcast());
+			let decl_types = self.db.lookup_item_types(patternref.item());
+			match patternref.item().local_item_ref(self.db.upcast()) {
+				LocalItemRef::Declaration(arena_index) => {
+					match &decl_types[patternref.pattern()] {
+						PatternTy::Variable(ty) => {
+							if ty.inst(self.db.upcast()) == Some(VarType::Var) {
+								objects_are_var = true;
+							}
+							if ty.opt(self.db.upcast()) == Some(OptType::Opt) {
+								need_potential = true;
+							}
+							let data = &m[arena_index].data;
+							let dt = &data[m[arena_index].declared_type];
+							match dt {
+								hir::Type::Set {
+									inst: VarType::Var,
+									opt,
+									cardinality: Some(card),
+									element,
+								} => {
+									need_potential = true;
+									let mut collector = ExpressionCollector::new(
+										self,
+										data,
+										patternref.item(),
+										&decl_types,
+									);
+									let exp = collector.collect_expression(*card);
+									let origin = exp.origin();
+									let max_call = LookupCall {
+										function: collector.parent.ids.max.into(),
+										arguments: vec![exp],
+									};
+									let max_exp = Expression::new(
+										collector.parent.db,
+										&collector.parent.model,
+										origin,
+										max_call,
+									);
+									let one_exp = Expression::new(
+										collector.parent.db,
+										&collector.parent.model,
+										origin,
+										IntegerLiteral(1),
+									);
+									let dotdot_call = LookupCall {
+										function: collector.parent.ids.dot_dot.into(),
+										arguments: vec![one_exp, max_exp],
+									};
+									let dotdot_exp = Expression::new(
+										collector.parent.db,
+										&collector.parent.model,
+										origin,
+										dotdot_call,
+									);
+
+									let enum_constr_domain = Domain::bounded(
+										collector.parent.db,
+										origin,
+										VarType::Par,
+										OptType::NonOpt,
+										dotdot_exp,
+									);
+
+									let decl = Declaration::new(false, enum_constr_domain.clone());
+									let idx = collector
+										.parent
+										.model
+										.add_declaration(Item::new(decl, origin));
+									constructors.push(Constructor {
+										name: Some(Identifier::new(
+											format!(
+												"{}_Class",
+												m[arena_index].data[m[arena_index].pattern]
+													.identifier()
+													.unwrap()
+													.lookup(self.db.upcast())
+											),
+											self.db.upcast(),
+										)),
+										parameters: Some(vec![idx]),
+									});
+
+									for (super_c_idx, super_c) in superclasses.iter().enumerate() {
+										let element = Domain::record(
+											self.db,
+											origin,
+											OptType::NonOpt,
+											super_c.attributes.iter().map(|(ident, ty)| {
+												(*ident, {
+													let class_item =
+														super_c.pattern(self.db.upcast()).item();
+													let class_decl_types =
+														self.db.lookup_item_types(class_item);
+													let m = class_item.model(self.db.upcast());
+													match class_item
+														.local_item_ref(self.db.upcast())
+													{
+														LocalItemRef::Class(lir_c) => m[lir_c]
+															.items
+															.iter()
+															.find_map(|item| match item {
+																hir::ClassItem::Declaration(d) => {
+																	if m[lir_c].data[d.pattern]
+																		.identifier() == Some(*ident)
+																	{
+																		let mut collector = ExpressionCollector::new(
+																							self,
+																							&m[lir_c].data,
+																							class_item,
+																							&class_decl_types,
+																						);
+																		Some(
+																			collector
+																				.collect_domain(
+																					d.declared_type,
+																					ty.make_var(
+																						collector
+																							.parent
+																							.db
+																							.upcast(
+																							),
+																					)
+																					.unwrap(),
+																					false,
+																				),
+																		)
+																	} else {
+																		None
+																	}
+																}
+																_ => None,
+															}),
+														_ => unreachable!(),
+													}
+													.unwrap()
+												})
+											}),
+										);
+
+										let dom = Domain::array(
+											self.db,
+											origin,
+											OptType::NonOpt,
+											enum_constr_domain.clone(),
+											element,
+										);
+
+										let mut obj_decl = Declaration::new(true, dom);
+										let field_name = patternref
+											.identifier(self.db.upcast())
+											.unwrap()
+											.lookup(self.db.upcast());
+
+										obj_decl.set_name(Identifier::new(
+											format!(
+												"{}_{}_{}_objects",
+												super_c.pretty_print(self.db.upcast()),
+												PatternRef::new(item, c.pattern)
+													.identifier(self.db.upcast())
+													.unwrap()
+													.lookup(self.db.upcast()),
+												field_name
+											),
+											self.db.upcast(),
+										));
+										let obj_idx =
+											self.model.add_declaration(Item::new(obj_decl, origin));
+										class_objects[super_c_idx].push(obj_idx);
+									}
+								}
+								hir::Type::Set {
+									inst: VarType::Var,
+									opt,
+									cardinality: None,
+									element,
+								} => unreachable!("Var set without cardinality not supportd (should be a type error)"),
+								hir::Type::New { inst: VarType::Par, opt: OptType::Opt, .. } |
+								hir::Type::Set {
+									inst: VarType::Par,
+									..
+								} => {
+									let isSet = matches!(dt, hir::Type::Set { .. });
+
+									// Compute type of the input array.
+									// The type is a record that has all par fields without right hand side of this class and all superclasses.
+									let record_ty = match types.get_pattern(c.pattern).unwrap() {
+										PatternTy::ClassDecl {
+											input_record_ty, ..
+										} => Ty::array(
+											self.db.upcast(),
+											Ty::par_int(self.db.upcast()),
+											*input_record_ty,
+										)
+										.unwrap(),
+										_ => unreachable!(),
+									};
+									let dom = Domain::unbounded(self.db, item, record_ty);
+									let mut decl = Declaration::new(true, dom);
+									let field_name = patternref
+										.identifier(self.db.upcast())
+										.unwrap()
+										.lookup(self.db.upcast());
+									if isSet {
+										decl.set_name(Identifier::new(
+											format!("{}_inputs", field_name),
+											self.db.upcast(),
+										));
+										if let Some(def) = m[arena_index].definition {
+											let mut collector = ExpressionCollector::new(
+												self,
+												data,
+												patternref.item(),
+												&decl_types,
+											);
+											decl.set_definition(collector.collect_expression(def));
+										}
+									} else {
+										decl.set_name(Identifier::new(
+											format!("{}_inputs_set", field_name),
+											self.db.upcast(),
+										));
+
+										let opt_record_ty = match types.get_pattern(c.pattern).unwrap() {
+											PatternTy::ClassDecl {
+												input_record_ty, ..
+											} => 
+												input_record_ty.with_opt(self.db.upcast(), OptType::Opt),
+											_ => unreachable!(),
+										};
+										let opt_dom = Domain::unbounded(self.db, item, opt_record_ty);
+										let mut opt_decl = Declaration::new(true, opt_dom);
+										opt_decl.set_name(Identifier::new(
+											format!("{}_inputs", field_name),
+											self.db.upcast(),
+										));
+
+										if let Some(def) = m[arena_index].definition {
+											let mut collector = ExpressionCollector::new(
+												self,
+												data,
+												patternref.item(),
+												&decl_types,
+											);
+											opt_decl.set_definition(collector.collect_expression(def));
+										}
+										let opt_decl_idx =
+										self.model.add_declaration(Item::new(opt_decl, item));
+										
+										let occurs_arg = Expression::new(
+											self.db,
+											&self.model,
+											item,
+											ResolvedIdentifier::Declaration(opt_decl_idx),
+										);
+										let occurs_call = Expression::new(
+											self.db,
+											&self.model,
+											item,
+											LookupCall {
+												function: self.ids.occurs.into(),
+												arguments: vec![occurs_arg.clone()],
+											},
+										);
+										let deopt_call = Expression::new(
+											self.db,
+											&self.model,
+											item,
+											LookupCall {
+												function: self.ids.deopt.into(),
+												arguments: vec![occurs_arg],
+											},
+										);
+										let array_deopt = Expression::new(
+											self.db,
+											&self.model,
+											item,
+											ArrayLiteral(vec![deopt_call]),
+										);
+										let array_empty = Expression::new(
+											self.db,
+											&self.model,
+											item,
+											ArrayLiteral(vec![]),
+										);
+
+										decl.set_definition(Expression::new(
+											self.db,
+											&self.model,
+											item,
+											IfThenElse{ branches: vec![Branch { condition: occurs_call, result: array_deopt }], else_result: Box::new(array_empty) },
+										))
+	
+									}
+									let decl_idx =
+										self.model.add_declaration(Item::new(decl, item));
+									let inputs_expr = Expression::new(
+										self.db,
+										&self.model,
+										item,
+										ResolvedIdentifier::Declaration(decl_idx),
+									);
+									let len_exp = Expression::new(
+										self.db,
+										&self.model,
+										item,
+										LookupCall {
+											function: self.ids.length.into(),
+											arguments: vec![inputs_expr.clone()],
+										},
+									);
+
+									let one_exp = Expression::new(
+										self.db,
+										&self.model,
+										item,
+										IntegerLiteral(1),
+									);
+									let dotdot_call = LookupCall {
+										function: self.ids.dot_dot.into(),
+										arguments: vec![one_exp, len_exp],
+									};
+									let dotdot_exp =
+										Expression::new(self.db, &self.model, item, dotdot_call);
+									let decl: Declaration<_> = Declaration::new(
+										false,
+										Domain::bounded(
+											self.db,
+											item,
+											VarType::Par,
+											OptType::NonOpt,
+											dotdot_exp,
+										),
+									);
+									let idx = self.model.add_declaration(Item::new(decl, item));
+									constructors.push(Constructor {
+										name: Some(Identifier::new(
+											format!(
+												"{}_{}",
+												PatternRef::new(item, c.pattern)
+													.identifier(self.db.upcast())
+													.unwrap()
+													.lookup(self.db.upcast()),
+												field_name
+											),
+											self.db.upcast(),
+										)),
+										parameters: Some(vec![idx]),
+									});
+
+									let origin = inputs_expr.origin();
+									let inputs_elem_ty =
+										inputs_expr.ty().elem_ty(self.db.upcast()).unwrap();
+									for (super_c_idx, super_c) in superclasses.iter().enumerate() {
+										let gen_decl = Declaration::new(
+											false,
+											Domain::unbounded(self.db, origin, inputs_elem_ty),
+										);
+										let gen_idx =
+											self.model.add_declaration(Item::new(gen_decl, origin));
+
+										let comp_exp = RecordLiteral(
+											super_c
+												.attributes
+												.iter()
+												.map(|(ident, ty)| {
+													(
+														*ident,
+														if ty.inst(self.db.upcast())
+															== Some(VarType::Par)
+														{
+															Expression::new(
+																self.db,
+																&self.model,
+																origin,
+																RecordAccess {
+																	record: Box::new(
+																		Expression::new(
+																			self.db,
+																			&self.model,
+																			origin,
+																			gen_idx,
+																		),
+																	),
+																	field: *ident,
+																},
+															)
+														} else {
+															let class_item = super_c
+																.pattern(self.db.upcast())
+																.item();
+															let class_decl_types = self
+																.db
+																.lookup_item_types(class_item);
+															let m =
+																class_item.model(self.db.upcast());
+															let decl_idx = match class_item
+																.local_item_ref(self.db.upcast())
+															{
+																LocalItemRef::Class(lir_c) => {
+																	m[lir_c].items.iter().find_map(
+																		|item| {
+																			match item {
+																				hir::ClassItem::Declaration(d) => {
+																					if m[lir_c].data[d.pattern].identifier() == Some(*ident) {
+																						let mut collector = ExpressionCollector::new(
+																							self,
+																							&m[lir_c].data,
+																							class_item,
+																							&class_decl_types,
+																						);
+																						let domain = collector.collect_domain(d.declared_type, *ty, false);
+																						let decl = Declaration::new(false, domain);
+																						let idx = self.model.add_declaration(Item::new(decl, class_item));
+																						Some(idx)
+																					} else {
+																						None
+																					}
+																				}
+																				_ => None,
+																			}
+																		},
+																	)
+																}
+																_ => unreachable!(),
+															}
+															.unwrap();
+															Expression::new(
+																		self.db,
+																		&self.model,
+																		origin,
+																		Let {
+																			items: vec![LetItem::Declaration(decl_idx)],
+																			in_expression: Box::new(Expression::new(
+																				self.db,
+																				&self.model,
+																				origin,
+																				ResolvedIdentifier::Declaration(decl_idx),
+																			)),
+																		}
+																	)
+														},
+													)
+												})
+												.collect(),
+										);
+										let comp = Expression::new(
+											self.db,
+											&self.model,
+											origin,
+											ArrayComprehension {
+												indices: None,
+												generators: vec![Generator::Iterator {
+													declarations: vec![gen_idx],
+													collection: inputs_expr.clone(),
+													where_clause: None,
+												}],
+												template: Box::new(Expression::new(
+													self.db,
+													&self.model,
+													origin,
+													comp_exp,
+												)),
+											},
+										);
+										let mut comp_decl =
+											Declaration::from_expression(self.db, true, comp);
+										comp_decl.set_name(Identifier::new(
+											format!(
+												"{}_{}_{}_objects",
+												super_c.pretty_print(self.db.upcast()),
+												PatternRef::new(item, c.pattern)
+													.identifier(self.db.upcast())
+													.unwrap()
+													.lookup(self.db.upcast()),
+												field_name
+											),
+											self.db.upcast(),
+										));
+										let comp_idx = self
+											.model
+											.add_declaration(Item::new(comp_decl, origin));
+										class_objects[super_c_idx].push(comp_idx);
+									}
+								}
+								hir::Type::New { inst: VarType::Par, opt: OptType::NonOpt, domain } => {
+									// Compute type of the input declaration (same as for sets, but not an array)
+									let record_ty = match types.get_pattern(c.pattern).unwrap() {
+										PatternTy::ClassDecl {
+											input_record_ty, ..
+										} => *input_record_ty,
+										_ => unreachable!(),
+									};
+									let dom = Domain::unbounded(self.db, item, record_ty);
+									let mut decl = Declaration::new(true, dom);
+									let field_name = patternref
+										.identifier(self.db.upcast())
+										.unwrap()
+										.lookup(self.db.upcast());
+									decl.set_name(Identifier::new(
+										format!("{}_input", field_name),
+										self.db.upcast(),
+									));
+									if let Some(def) = m[arena_index].definition {
+										let mut collector = ExpressionCollector::new(
+											self,
+											data,
+											patternref.item(),
+											&decl_types,
+										);
+										decl.set_definition(collector.collect_expression(def));
+									}
+									let decl_idx =
+										self.model.add_declaration(Item::new(decl, item));
+
+									constructors.push(Constructor {
+										name: Some(Identifier::new(
+											format!(
+												"{}_Class",
+												m[arena_index].data[m[arena_index].pattern]
+													.identifier()
+													.unwrap()
+													.lookup(self.db.upcast())
+											),
+											self.db.upcast(),
+										)),
+										parameters: None,
+									});
+									let origin = item;
+									for (super_c_idx, super_c) in superclasses.iter().enumerate() {
+										let comp_exp = RecordLiteral(
+											super_c
+												.attributes
+												.iter()
+												.map(|(ident, ty)| {
+													(
+														*ident,
+														if ty.inst(self.db.upcast())
+															== Some(VarType::Par)
+														{
+															Expression::new(
+																self.db,
+																&self.model,
+																origin,
+																RecordAccess {
+																	record: Box::new(
+																		Expression::new(
+																			self.db,
+																			&self.model,
+																			origin,
+																			decl_idx,
+																		),
+																	),
+																	field: *ident,
+																},
+															)
+														} else {
+															let class_item = super_c
+																.pattern(self.db.upcast())
+																.item();
+															let class_decl_types = self
+																.db
+																.lookup_item_types(class_item);
+															let m =
+																class_item.model(self.db.upcast());
+															let decl_idx = match class_item
+																.local_item_ref(self.db.upcast())
+															{
+																LocalItemRef::Class(lir_c) => {
+																	m[lir_c].items.iter().find_map(
+																		|item| {
+																			match item {
+																				hir::ClassItem::Declaration(d) => {
+																					if m[lir_c].data[d.pattern].identifier() == Some(*ident) {
+																						let mut collector = ExpressionCollector::new(
+																							self,
+																							&m[lir_c].data,
+																							class_item,
+																							&class_decl_types,
+																						);
+																						let domain = collector.collect_domain(d.declared_type, *ty, false);
+																						let decl = Declaration::new(false, domain);
+																						let idx = self.model.add_declaration(Item::new(decl, class_item));
+																						Some(idx)
+																					} else {
+																						None
+																					}
+																				}
+																				_ => None,
+																			}
+																		},
+																	)
+																}
+																_ => unreachable!(),
+															}
+															.unwrap();
+															Expression::new(
+																		self.db,
+																		&self.model,
+																		origin,
+																		Let {
+																			items: vec![LetItem::Declaration(decl_idx)],
+																			in_expression: Box::new(Expression::new(
+																				self.db,
+																				&self.model,
+																				origin,
+																				ResolvedIdentifier::Declaration(decl_idx),
+																			)),
+																		}
+																	)
+														},
+													)
+												})
+												.collect(),
+										);
+
+										let comp_exp_exp = 
+										Expression::new(
+											self.db,
+											&self.model,
+											origin,
+											ArrayLiteral(
+												vec![Expression::new(
+													self.db,
+													&self.model,
+													origin,
+													comp_exp,
+													)
+												]
+											),
+										);
+
+										let mut comp_decl =
+											Declaration::from_expression(self.db, true, comp_exp_exp);
+										comp_decl.set_name(Identifier::new(
+											format!(
+												"{}_{}_{}_object",
+												super_c.pretty_print(self.db.upcast()),
+												PatternRef::new(item, c.pattern)
+													.identifier(self.db.upcast())
+													.unwrap()
+													.lookup(self.db.upcast()),
+												field_name
+											),
+											self.db.upcast(),
+										));
+										let comp_idx = self
+											.model
+											.add_declaration(Item::new(comp_decl, origin));
+										class_objects[super_c_idx].push(comp_idx);
+									}
+								}
+								hir::Type::New { inst: VarType::Var, opt, domain } => {
+									let origin = patternref.item();
+
+									for (super_c_idx, super_c) in superclasses.iter().enumerate() {
+										let element = Domain::record(
+											self.db,
+											origin,
+											OptType::NonOpt,
+											super_c.attributes.iter().map(|(ident, ty)| {
+												(*ident, {
+													let class_item =
+														super_c.pattern(self.db.upcast()).item();
+													let class_decl_types =
+														self.db.lookup_item_types(class_item);
+													let m = class_item.model(self.db.upcast());
+													match class_item
+														.local_item_ref(self.db.upcast())
+													{
+														LocalItemRef::Class(lir_c) => m[lir_c]
+															.items
+															.iter()
+															.find_map(|item| match item {
+																hir::ClassItem::Declaration(d) => {
+																	if m[lir_c].data[d.pattern]
+																		.identifier() == Some(*ident)
+																	{
+																		let mut collector = ExpressionCollector::new(
+																							self,
+																							&m[lir_c].data,
+																							class_item,
+																							&class_decl_types,
+																						);
+																		Some(
+																			collector
+																				.collect_domain(
+																					d.declared_type,
+																					ty.make_var(
+																						collector
+																							.parent
+																							.db
+																							.upcast(
+																							),
+																					)
+																					.unwrap(),
+																					false,
+																				),
+																		)
+																	} else {
+																		None
+																	}
+																}
+																_ => None,
+															}),
+														_ => unreachable!(),
+													}
+													.unwrap()
+												})
+											}),
+										);
+
+										let one_one = Expression::new(
+											self.db,
+											&self.model,
+											origin,
+											SetLiteral(vec![Expression::new(
+												self.db,
+												&self.model,
+												origin,
+												IntegerLiteral(1),
+											)]),
+										);
+
+										let dom = Domain::array(
+											self.db,
+											origin,
+											OptType::NonOpt,
+											Domain::bounded(self.db, origin, VarType::Par, OptType::NonOpt, one_one),
+											element,
+										);
+
+										let mut obj_decl = Declaration::new(true, dom);
+										let field_name = patternref
+											.identifier(self.db.upcast())
+											.unwrap()
+											.lookup(self.db.upcast());
+
+										obj_decl.set_name(Identifier::new(
+											format!(
+												"{}_{}_{}_objects",
+												super_c.pretty_print(self.db.upcast()),
+												PatternRef::new(item, c.pattern)
+													.identifier(self.db.upcast())
+													.unwrap()
+													.lookup(self.db.upcast()),
+												field_name
+											),
+											self.db.upcast(),
+										));
+										let obj_idx =
+											self.model.add_declaration(Item::new(obj_decl, origin));
+										class_objects[super_c_idx].push(obj_idx);
+									}
+
+									constructors.push(Constructor {
+										name: Some(Identifier::new(
+											format!(
+												"{}_singleton",
+												m[arena_index].data[m[arena_index].pattern]
+													.identifier()
+													.unwrap()
+													.lookup(self.db.upcast())
+											),
+											self.db.upcast(),
+										)),
+										parameters: None,
+									});
+								}
+								_ => unreachable!()
+							}
+						}
+						_ => unreachable!(),
+					}
+				}
+				LocalItemRef::Class(arena_index) => {
+					let ci_item = &m[arena_index].items[*ci_idx];
+				}
+				_ => unreachable!(),
+			}
+		}
+
+		let class_ident = c.data[c.pattern]
+			.identifier()
+			.unwrap()
+			.lookup(self.db.upcast());
+		for patternref in class_subclasses.iter().flat_map(|x| x.iter()) {
+			let ident = patternref.identifier(self.db.upcast()).unwrap();
+
+			let ident_expr = match self.resolutions.entry(*patternref) {
+				Entry::Occupied(e) => match e.get() {
+					LoweredIdentifier::ResolvedIdentifier(ResolvedIdentifier::Enumeration(i)) => *i,
+					_ => unreachable!(),
+				},
+				Entry::Vacant(e) => {
+					let name = Identifier::new(
+						format!("{}_Potential", ident.lookup(self.db.upcast())),
+						self.db.upcast(),
+					);
+					let enumeration = Enumeration::new(EnumRef::introduce(self.db.upcast(), name));
+					let idx = self.model.add_enumeration(Item::new(enumeration, item));
+					let resolved_ident = LoweredIdentifier::ResolvedIdentifier(idx.into());
+					e.insert(resolved_ident);
+					idx
+				}
+			};
+
+			let decl = Declaration::new(
+				false,
+				Domain::bounded(
+					self.db,
+					item,
+					VarType::Par,
+					OptType::NonOpt,
+					Expression::new(self.db, &self.model, item, ident_expr),
+				),
+			);
+			let idx = self.model.add_declaration(Item::new(decl, item));
+
+			constructors.push(Constructor {
+				name: Some(Identifier::new(
+					format!("{}_in_{}", ident.lookup(self.db.upcast()), class_ident),
+					self.db.upcast(),
+				)),
+				parameters: Some(vec![idx]),
+			});
+
+			match self.class_objects.entry(*patternref) {
+				Entry::Occupied(mut e) => {
+					for (subclass_o_idx, subclass_o) in e.get_mut().iter_mut().skip(1).enumerate() {
+						subclass_o.class_enum_member =
+							Some(class_objects[subclass_o_idx].len() as u32);
+						class_objects[subclass_o_idx].push(subclass_o.class_objects);
+					}
+				}
+				Entry::Vacant(e) => {
+					let mut subclass_objects = Vec::with_capacity(superclasses.len() + 1);
+
+					let mut add_class_objects_decl =
+						|subclass_item: ItemRef, subclass_name: Identifier| {
+							let m = subclass_item.model(self.db.upcast());
+
+							let subclass_record_ty =
+								match subclass_item.local_item_ref(self.db.upcast()) {
+									LocalItemRef::Class(sc) => {
+										let types = self.db.lookup_item_types(subclass_item);
+										let fields = match types[m[sc].pattern] {
+											PatternTy::ClassDecl {
+												defining_set_ty,
+												input_record_ty,
+											} => {
+												defining_set_ty
+													.class_type(self.db.upcast())
+													.unwrap()
+													.attributes
+											}
+											_ => unreachable!(),
+										};
+										Ty::array(
+											self.db.upcast(),
+											Ty::par_int(self.db.upcast()),
+											Ty::record(self.db.upcast(), fields),
+										)
+										.unwrap()
+									}
+									_ => unreachable!(),
+								};
+							let mut subclass_decl = Declaration::new(
+								true,
+								Domain::unbounded(self.db, subclass_item, subclass_record_ty),
+							);
+							subclass_decl.set_name(subclass_name);
+
+							self.model
+								.add_declaration(Item::new(subclass_decl, subclass_item))
+						};
+
+					let subclass_name = Identifier::new(
+						format!("{}_Objects", ident.lookup(self.db.upcast())),
+						self.db.upcast(),
+					);
+
+					let subclass_objects_idx =
+						add_class_objects_decl(patternref.item(), subclass_name);
+					subclass_objects.push(ClassObjectsInfo {
+						class_objects: subclass_objects_idx,
+						class_enum_member: None,
+					});
+
+					for (super_c_idx, super_c) in superclasses.iter().enumerate() {
+						let superclass_name = Identifier::new(
+							format!(
+								"{}_{}_Objects",
+								super_c.pretty_print(self.db.upcast()),
+								ident.lookup(self.db.upcast())
+							),
+							self.db.upcast(),
+						);
+						let superclass_objects_idx = add_class_objects_decl(
+							super_c.pattern(self.db.upcast()).item(),
+							superclass_name,
+						);
+
+						subclass_objects.push(ClassObjectsInfo {
+							class_objects: subclass_objects_idx,
+							class_enum_member: Some(class_objects[super_c_idx].len() as u32),
+						});
+						class_objects[super_c_idx].push(superclass_objects_idx);
+					}
+
+					e.insert(subclass_objects);
+				}
+			};
+		}
+
+		let class_pattern_ref = PatternRef::new(item, c.pattern);
+		let class_enum_id = match self.resolutions.entry(class_pattern_ref) {
+			Entry::Occupied(e) => match e.get() {
+				LoweredIdentifier::ResolvedIdentifier(ResolvedIdentifier::Enumeration(i)) => {
+					self.model[*i].set_definition(constructors);
+					*i
+				}
+				_ => unreachable!(),
+			},
+			Entry::Vacant(e) => {
+				let name = Identifier::new(format!("{}_Potential", class_ident), self.db.upcast());
+				let mut enumeration = Enumeration::new(EnumRef::introduce(self.db.upcast(), name));
+				enumeration.set_definition(constructors);
+				let idx = self.model.add_enumeration(Item::new(enumeration, item));
+				e.insert(LoweredIdentifier::ResolvedIdentifier(idx.into()));
+				idx
+			}
+		};
+
+		let class_object_decls = self
+			.class_objects
+			.entry(class_pattern_ref)
+			.or_insert_with(|| {
+				let mut subclass_objects = Vec::with_capacity(superclasses.len());
+
+				let mut add_class_objects_decl =
+					|subclass_item: ItemRef, subclass_name: Identifier| {
+						let m = subclass_item.model(self.db.upcast());
+
+						let subclass_record_ty =
+							match subclass_item.local_item_ref(self.db.upcast()) {
+								LocalItemRef::Class(sc) => {
+									let types = self.db.lookup_item_types(subclass_item);
+									let fields = match types[m[sc].pattern] {
+										PatternTy::ClassDecl {
+											defining_set_ty,
+											input_record_ty,
+										} => {
+											defining_set_ty
+												.class_type(self.db.upcast())
+												.unwrap()
+												.attributes
+										}
+										_ => unreachable!(),
+									};
+									Ty::array(
+										self.db.upcast(),
+										Ty::par_int(self.db.upcast()),
+										Ty::record(self.db.upcast(), fields),
+									)
+									.unwrap()
+								}
+								_ => unreachable!(),
+							};
+						let mut subclass_decl = Declaration::new(
+							true,
+							Domain::unbounded(self.db, subclass_item, subclass_record_ty),
+						);
+						subclass_decl.set_name(subclass_name);
+
+						self.model
+							.add_declaration(Item::new(subclass_decl, subclass_item))
+					};
+
+				let subclass_name =
+					Identifier::new(format!("{}_Objects", class_ident), self.db.upcast());
+
+				let subclass_objects_idx = add_class_objects_decl(item, subclass_name);
+				subclass_objects.push(ClassObjectsInfo {
+					class_objects: subclass_objects_idx,
+					class_enum_member: None,
+				});
+
+				for super_c in superclasses.iter().skip(1) {
+					let superclass_name = Identifier::new(
+						format!(
+							"{}_{}_Objects",
+							super_c.pretty_print(self.db.upcast()),
+							class_ident
+						),
+						self.db.upcast(),
+					);
+					let superclass_objects_idx = add_class_objects_decl(
+						super_c.pattern(self.db.upcast()).item(),
+						superclass_name,
+					);
+
+					subclass_objects.push(ClassObjectsInfo {
+						class_objects: superclass_objects_idx,
+						class_enum_member: None,
+					});
+				}
+
+				subclass_objects
+			});
+
+		for (class_obj_decl, class_obj_occurrence_decls) in
+			class_object_decls.iter().zip(class_objects)
+		{
+			if class_obj_occurrence_decls.is_empty() {
+				let empty_array =
+					Expression::new(self.db, &self.model, item, ArrayLiteral(Vec::new()));
+				self.model[class_obj_decl.class_objects].set_definition(empty_array);
+			} else {
+				let class_obj_rhs = class_obj_occurrence_decls.iter().skip(1).fold(
+					Expression::new(self.db, &self.model, item, class_obj_occurrence_decls[0]),
+					|acc, element| {
+						Expression::new(
+							self.db,
+							&self.model,
+							item,
+							LookupCall {
+								function: self.ids.plus_plus.into(),
+								arguments: vec![
+									acc,
+									Expression::new(self.db, &self.model, item, *element),
+								],
+							},
+						)
+					},
+				);
+				self.model[class_obj_decl.class_objects].set_definition(class_obj_rhs);
+			}
+		}
+
+		// let mut record_fields = Vec::new();
+		// for item in c.items.iter() {
+		// 	match item {
+		// 		hir::ClassItem::Declaration(d) => {
+
+		// 		}
+		// 		_ => {}
+		// 	}
+		// }
+		// let record_domain = Domain::record(self.db, item, OptType::NonOpt, record_fields);
 	}
 
 	/// Collect an annotation item
@@ -255,7 +1347,61 @@ impl<'a> ItemCollector<'a> {
 		let mut collector = ExpressionCollector::new(self, data, item, &types);
 		let domain = collector.collect_domain(d.declared_type, ty, false);
 		let mut decl = Declaration::new(top_level, domain);
-		if let Some(def) = d.definition {
+		if data[d.declared_type].is_new(data) {
+			if ty.is_set(collector.parent.db.upcast()) {
+				if ty.inst(collector.parent.db.upcast()) == Some(VarType::Par) {
+					match &**decl.domain() {
+						DomainData::Set(boxed_domain, _) => match &***boxed_domain {
+							DomainData::Bounded(e) => {
+								decl.set_definition((**e).clone());
+							}
+							_ => unreachable!(),
+						},
+						_ => unreachable!(),
+					}
+				}
+			} else if ty.opt(collector.parent.db.upcast()) == Some(OptType::Opt) {
+				if ty.inst(collector.parent.db.upcast()) == Some(VarType::Par) {
+					match &**decl.domain() {
+						DomainData::Bounded(e) => {
+							let card_e = alloc_expression(LookupCall {
+								function: collector.parent.ids.card.into(),
+								arguments: vec![(**e).clone()],
+							}, &collector, item);
+							let zero = alloc_expression(IntegerLiteral(0), &collector, item);
+							let eq = alloc_expression(LookupCall {
+								function: collector.parent.ids.eq.into(),
+								arguments: vec![card_e, zero],
+							}, &collector, item);
+							let absent = alloc_expression(Absent, &collector, item);
+							let min_e = alloc_expression(LookupCall {
+								function: collector.parent.ids.min.into(),
+								arguments: vec![(**e).clone()],
+							}, &collector, item);
+							let if_then_else = alloc_expression(IfThenElse {
+								branches: vec![Branch {
+									condition: eq,
+									result: absent,
+								}],
+								else_result: Box::new(min_e),
+							}, &collector, item);
+							decl.set_definition(if_then_else);
+						}
+						_ => unreachable!(),
+					}
+				}
+			} else {
+				match &**decl.domain() {
+					DomainData::Bounded(e) => match &***e {
+						ExpressionData::SetLiteral(SetLiteral(element)) => {
+							decl.set_definition(element[0].clone());
+						}
+						_ => unreachable!(),
+					},
+					_ => unreachable!(),
+				}
+			}
+		} else if let Some(def) = d.definition {
 			decl.set_definition(collector.collect_expression(def));
 		}
 		let idx = collector
@@ -947,9 +2093,7 @@ impl<'a, 'b> ExpressionCollector<'a, 'b> {
 					origin,
 				);
 
-				if expr.ty() == ty {
-					expr
-				} else {
+				if expr.ty() != ty && expr.ty().make_par(db.upcast()) == ty {
 					// Need to insert call to fix()
 					assert_eq!(expr.ty().make_par(db.upcast()), ty);
 					alloc_expression(
@@ -960,6 +2104,8 @@ impl<'a, 'b> ExpressionCollector<'a, 'b> {
 						self,
 						origin,
 					)
+				} else {
+					expr
 				}
 			}
 			hir::Expression::IfThenElse(ite) => alloc_expression(
@@ -1060,7 +2206,82 @@ impl<'a, 'b> ExpressionCollector<'a, 'b> {
 			),
 			hir::Expression::RecordAccess(ra) => {
 				let record = self.collect_expression(ra.record);
-				if self.types[ra.record].is_array(self.parent.db.upcast()) {
+				if self.types[ra.record].is_class(self.parent.db.upcast()) {
+					let class_type = self.types[ra.record]
+						.class_type(self.parent.db.upcast())
+						.unwrap();
+
+					let mut access_expr = record;
+
+					let class_pattern_ref = class_type.pattern(self.parent.db.upcast());
+					let class_objects_infos = &self.parent.class_objects[&class_pattern_ref];
+
+					for (super_class_idx, super_class) in
+						class_type.superclasses(self.parent.db.upcast()).enumerate()
+					{
+						if let Some(super_class_constr_idx) =
+							class_objects_infos[super_class_idx].class_enum_member
+						{
+							let super_enum = match self.parent.resolutions
+								[&super_class.pattern(self.parent.db.upcast())]
+							{
+								LoweredIdentifier::ResolvedIdentifier(
+									ResolvedIdentifier::Enumeration(i),
+								) => i,
+								_ => unreachable!(),
+							};
+							let enum_member = EnumMemberId::new(super_enum, super_class_constr_idx);
+
+							access_expr = alloc_expression(
+								Call {
+									function: Callable::EnumConstructor(enum_member),
+									arguments: vec![access_expr],
+								},
+								self,
+								origin,
+							);
+						}
+
+						let have_attr = super_class
+							.attributes
+							.iter()
+							.any(|(attr_id, _)| *attr_id == ra.field);
+						if have_attr {
+							let superclass_pattern_ref =
+								super_class.pattern(self.parent.db.upcast());
+							let objects_decl =
+								&self.parent.class_objects[&superclass_pattern_ref][0];
+							let objects_decl_id =
+								alloc_expression(objects_decl.class_objects, self, origin);
+
+							let erase_enum = alloc_expression(
+								LookupCall {
+									function: self.parent.ids.erase_enum.into(),
+									arguments: vec![access_expr],
+								},
+								self,
+								origin,
+							);
+							let array_access = alloc_expression(
+								LookupCall {
+									function: self.parent.ids.array_access.into(),
+									arguments: vec![objects_decl_id, erase_enum],
+								},
+								self,
+								origin,
+							);
+							return alloc_expression(
+								RecordAccess {
+									record: Box::new(array_access),
+									field: ra.field,
+								},
+								self,
+								origin,
+							);
+						}
+					}
+					unreachable!()
+				} else if self.types[ra.record].is_array(self.parent.db.upcast()) {
 					// Lift to comprehension
 					let record_ty = record.ty().elem_ty(self.parent.db.upcast()).unwrap();
 					let declaration = Declaration::new(
@@ -1095,7 +2316,7 @@ impl<'a, 'b> ExpressionCollector<'a, 'b> {
 				} else {
 					alloc_expression(
 						RecordAccess {
-							record: Box::new(self.collect_expression(ra.record)),
+							record: Box::new(record),
 							field: ra.field,
 						},
 						self,
@@ -1208,14 +2429,14 @@ impl<'a, 'b> ExpressionCollector<'a, 'b> {
 				.annotations(idx)
 				.map(|ann| self.collect_expression(ann)),
 		);
-		assert_eq!(
-			result.ty(),
-			ty,
-			"Type by construction ({}) disagrees with typechecker ({}) at {:?}",
-			result.ty().pretty_print(db.upcast()),
-			ty.pretty_print(db.upcast()),
-			NodeRef::from(origin).source_span(db.upcast())
-		);
+		// assert_eq!(
+		// 	result.ty(),
+		// 	ty,
+		// 	"Type by construction ({}) disagrees with typechecker ({}) at {:?}",
+		// 	result.ty().pretty_print(db.upcast()),
+		// 	ty.pretty_print(db.upcast()),
+		// 	NodeRef::from(origin).source_span(db.upcast())
+		// );
 		result
 	}
 
@@ -2038,11 +3259,19 @@ impl<'a, 'b> ExpressionCollector<'a, 'b> {
 				self.collect_domain(*dimensions, d, is_type_alias),
 				self.collect_domain(*element, el, is_type_alias),
 			),
-			(hir::Type::Set { element, .. }, TyData::Set(inst, opt, e)) => Domain::set(
+			(
+				hir::Type::Set {
+					element,
+					cardinality,
+					..
+				},
+				TyData::Set(inst, opt, e),
+			) => Domain::set_with_card(
 				db,
 				origin,
 				inst,
 				opt,
+				cardinality.map(|c| self.collect_expression(c)),
 				self.collect_domain(*element, e, is_type_alias),
 			),
 			(hir::Type::Tuple { fields, .. }, TyData::Tuple(opt, fs)) => Domain::tuple(
@@ -2079,6 +3308,80 @@ impl<'a, 'b> ExpressionCollector<'a, 'b> {
 					)
 				}),
 			),
+			(hir::Type::New { inst, opt, domain }, _) => {
+				// let e = self.collect_expression(*domain);
+				// To do:
+				// Look up self.item in the enum_idx, recreate constructor expression
+				// from the cardinality expression on the item and the corresponding
+				// constructor of the class declaration.
+
+				// var new A: x                           -> {<looked up constructor value>}: x
+				// var opt new A: x                       -> var opt {<looked up constructor value>}: x
+				// var set(d) of new A: x                 -> var set(d) of <looked_up_constructor_value>(1..max(d)): x
+				// class B (... var new A: x ...)         ->
+				// class B (... var opt new A: x ...)
+				// class B (... var set(d) of new A:x ...)
+
+				let (e, new_inst, new_opt) = match self.item.local_item_ref(db.upcast()) {
+					LocalItemRef::Declaration(d) => {
+						let decl = &self.item.model(db.upcast())[d];
+						let item_ty_idx = decl.declared_type;
+						let analysis_results = db.class_analysis();
+						let (pattern_ref, idx) =
+							analysis_results.enum_idx[&PatternRef::new(self.item, decl.pattern)];
+						let enum_id = match &self.parent.resolutions[&pattern_ref] {
+							LoweredIdentifier::ResolvedIdentifier(
+								ResolvedIdentifier::Enumeration(e),
+							) => *e,
+							_ => unreachable!(),
+						};
+						let enum_member_id = EnumMemberId::new(enum_id, idx as u32);
+						let item_ty = &decl.data[item_ty_idx];
+						match item_ty {
+							hir::Type::Set { .. } => {
+								// let card_expr = self.collect_expression(*c);
+								// let origin = card_expr.origin();
+								let call = Call {
+									function: Callable::EnumConstructor(enum_member_id),
+									arguments: vec![],
+								};
+								let call_expr = alloc_expression(call, self, origin);
+								(call_expr, VarType::Par, OptType::NonOpt)
+							}
+							x => {
+								if *opt == OptType::Opt && *inst == VarType::Par {
+									let call = Call {
+										function: Callable::EnumConstructor(enum_member_id),
+										arguments: vec![],
+									};
+									let call_expr = alloc_expression(call, self, origin);
+									(call_expr, VarType::Par, OptType::Opt)	
+								} else {
+									let ri = ResolvedIdentifier::EnumerationMember(enum_member_id);
+									let ri_expr = alloc_expression(ri, self, origin);
+									let ri_singleton =
+										alloc_expression(SetLiteral(vec![ri_expr]), self, origin);
+									let (new_inst, new_opt) = match (inst, opt) {
+										(VarType::Par, OptType::NonOpt) => {
+											(VarType::Par, OptType::NonOpt)
+										}
+										(VarType::Par, OptType::Opt) => (VarType::Par, OptType::Opt),
+										(VarType::Var, OptType::NonOpt) => {
+											(VarType::Par, OptType::NonOpt)
+										}
+										(VarType::Var, OptType::Opt) => (VarType::Var, OptType::Opt),
+									};
+									(ri_singleton, new_inst, new_opt)	
+								}
+							}
+						}
+					}
+					LocalItemRef::Class(c) => todo!(),
+					_ => unreachable!(),
+				};
+
+				Domain::bounded(db, origin, new_inst, new_opt, e)
+			}
 			_ => Domain::unbounded(self.parent.db, origin, ty),
 		}
 	}

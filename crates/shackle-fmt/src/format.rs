@@ -239,18 +239,16 @@ impl CommentMap {
 				}
 				next_non_extra = n.next_sibling();
 			}
-			let blank_line_before = node
-				.prev_sibling()
-				.map(|n| n.end_position().row < node.start_position().row.saturating_sub(1))
-				.unwrap_or_default()
-				&& node
+			let blank_line_before =
+				node.prev_sibling()
+					.map(|n| n.end_position().row < node.start_position().row.saturating_sub(1))
+					.unwrap_or_default() && node
 					.parent()
 					.map(|n| n.kind() == "source_file")
 					.unwrap_or_default();
-			let is_suffix = prev
-				.map(|p| p.end_position().row == node.start_position().row)
-				.unwrap_or_default()
-				&& (is_line
+			let is_suffix =
+				prev.map(|p| p.end_position().row == node.start_position().row)
+					.unwrap_or_default() && (is_line
 					|| next_non_extra
 						.map(|n| n.start_position().row > node.end_position().row || !n.is_named())
 						.unwrap_or(true));

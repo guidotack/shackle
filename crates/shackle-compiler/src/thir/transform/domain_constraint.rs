@@ -20,7 +20,8 @@ use crate::{
 		db::Thir,
 		source::Origin,
 		traverse::{
-			add_declaration, add_function, fold_function_body, fold_let, Folder, ReplacementMap,
+			add_declaration, add_function, fold_domain, fold_function_body, fold_let, Folder,
+			ReplacementMap,
 		},
 		ArrayComprehension, ArrayLiteral, Constraint, Declaration, DeclarationId, Domain,
 		DomainData, Expression, FunctionId, Generator, Item, Let, LetItem, LookupCall, Marker,
@@ -38,6 +39,10 @@ enum DomainConstraint<T: Marker> {
 	Tuple(Origin, Vec<(IntegerLiteral, DomainConstraint<T>)>),
 	Record(Origin, Vec<(Identifier, DomainConstraint<T>)>),
 	Bound(DeclarationId<T>),
+	Set {
+		domain: Option<DeclarationId<T>>,
+		card: DeclarationId<T>,
+	},
 }
 
 enum IndexSet<T: Marker> {
@@ -90,6 +95,50 @@ impl<Dst: Marker, Src: Marker> Folder<'_, Dst, Src> for DomainRewriter<Dst, Src>
 				self.model[idx].set_domain(unbounded);
 				return;
 			}
+
+			if model[d].top_level() {
+				if let DomainData::Set(_, Some(e)) = &**model[d].domain() {
+					let card = self.fold_expression(db, model, e);
+					let card_decl = Declaration::from_expression(db, true, card);
+					let card_idx = self.model.add_declaration(Item::new(card_decl, e.origin()));
+					let decl_id = add_declaration(self, db, model, d);
+					let name = Expression::new(
+						db,
+						&self.model,
+						model[d].origin(),
+						StringLiteral::new(
+							model[d]
+								.name()
+								.map(|n| n.pretty_print(db.upcast()))
+								.unwrap_or_else(|| "<unnamed>".to_owned()),
+							db.upcast(),
+						),
+					);
+					let card_constraint = Expression::new(
+						db,
+						&self.model,
+						e.origin(),
+						LookupCall {
+							function: self.ids.mzn_card_constraint.into(),
+							arguments: vec![
+								name,
+								Expression::new(
+									db,
+									&self.model,
+									self.model[decl_id].origin(),
+									decl_id,
+								),
+								Expression::new(db, &self.model, e.origin(), card_idx),
+							],
+						},
+					);
+					let constraint = Constraint::new(true, card_constraint);
+					self.model
+						.add_constraint(Item::new(constraint, model[d].origin()));
+
+					return;
+				}
+			}
 		} else if model[d].top_level() {
 			// Ignore local declarations, they're processed separately
 			if let Some(dom) =
@@ -120,6 +169,7 @@ impl<Dst: Marker, Src: Marker> Folder<'_, Dst, Src> for DomainRewriter<Dst, Src>
 				return;
 			}
 		}
+
 		add_declaration(self, db, model, d);
 	}
 
@@ -244,6 +294,53 @@ impl<Dst: Marker, Src: Marker> Folder<'_, Dst, Src> for DomainRewriter<Dst, Src>
 						false,
 					)
 				} else {
+					if let DomainData::Set(_, Some(e)) = &**model[*d].domain() {
+						let card = self.fold_expression(db, model, e);
+						let card_decl = Declaration::from_expression(db, false, card);
+						let card_idx = self.model.add_declaration(Item::new(card_decl, e.origin()));
+						folded.items.push(LetItem::Declaration(card_idx));
+						let decl_id = match folded_item {
+							LetItem::Declaration(d) => d,
+							_ => unreachable!(),
+						};
+						let name = Expression::new(
+							db,
+							&self.model,
+							model[*d].origin(),
+							StringLiteral::new(
+								model[*d]
+									.name()
+									.map(|n| n.pretty_print(db.upcast()))
+									.unwrap_or_else(|| "<unnamed>".to_owned()),
+								db.upcast(),
+							),
+						);
+						let card_constraint = Expression::new(
+							db,
+							&self.model,
+							e.origin(),
+							LookupCall {
+								function: self.ids.mzn_card_constraint.into(),
+								arguments: vec![
+									name,
+									Expression::new(
+										db,
+										&self.model,
+										self.model[decl_id].origin(),
+										decl_id,
+									),
+									Expression::new(db, &self.model, e.origin(), card_idx),
+								],
+							},
+						);
+						let constraint = Constraint::new(false, card_constraint);
+						let constraint_id = self
+							.model
+							.add_constraint(Item::new(constraint, model[*d].origin()));
+						folded.items.push(folded_item);
+						folded.items.push(LetItem::Constraint(constraint_id));
+						continue;
+					}
 					None
 				};
 				if let Some(dom) = domain_constraint {
@@ -278,6 +375,26 @@ impl<Dst: Marker, Src: Marker> Folder<'_, Dst, Src> for DomainRewriter<Dst, Src>
 			folded.items.push(folded_item);
 		}
 		folded
+	}
+
+	fn fold_domain(
+		&mut self,
+		db: &'_ dyn Thir,
+		model: &'_ Model<Src>,
+		domain: &'_ Domain<Src>,
+	) -> Domain<Dst> {
+		if let DomainData::Set(elem, _) = &**domain {
+			let elem = self.fold_domain(db, model, elem);
+			Domain::set(
+				db,
+				domain.origin(),
+				domain.ty().inst(db.upcast()).unwrap(),
+				domain.ty().opt(db.upcast()).unwrap(),
+				elem,
+			)
+		} else {
+			fold_domain(self, db, model, domain)
+		}
 	}
 }
 
@@ -350,8 +467,27 @@ impl<Dst: Marker, Src: Marker> DomainRewriter<Dst, Src> {
 					))
 				}
 			}
-			DomainData::Set(elem) => {
-				self.collect_domain_constraints(db, model, elem, decls, top_level)
+			DomainData::Set(elem, card) => {
+				if let Some(c) = card {
+					let folded = self.fold_expression(db, model, c);
+					let decl = Declaration::from_expression(db, top_level, folded);
+					let idx = self.model.add_declaration(Item::new(decl, c.origin()));
+					if !top_level {
+						decls.push(LetItem::Declaration(idx));
+					}
+					let dom_constr =
+						self.collect_domain_constraints(db, model, elem, decls, top_level);
+
+					Some(DomainConstraint::Set {
+						domain: dom_constr.map(|d| match d {
+							DomainConstraint::Bound(e) => e,
+							_ => unreachable!(),
+						}),
+						card: idx,
+					})
+				} else {
+					self.collect_domain_constraints(db, model, elem, decls, top_level)
+				}
 			}
 			DomainData::Tuple(fields) => {
 				let d = fields
@@ -409,6 +545,46 @@ impl<Dst: Marker, Src: Marker> DomainRewriter<Dst, Src> {
 						arguments: vec![name, variable, domain],
 					},
 				)
+			}
+			DomainConstraint::Set { domain, card } => {
+				let card_constraint = Expression::new(
+					db,
+					&self.model,
+					self.model[card].origin(),
+					LookupCall {
+						function: self.ids.mzn_card_constraint.into(),
+						arguments: vec![
+							name.clone(),
+							variable.clone(),
+							Expression::new(db, &self.model, self.model[card].origin(), card),
+						],
+					},
+				);
+				if let Some(e) = domain {
+					let dom_origin = self.model[e].origin();
+					let domain = Expression::new(db, &self.model, dom_origin, e);
+					let dom_constraint = Expression::new(
+						db,
+						&self.model,
+						dom_origin,
+						LookupCall {
+							function: self.ids.mzn_domain_constraint.into(),
+							arguments: vec![name, variable, domain],
+						},
+					);
+					let dom_con = Expression::new(
+						db,
+						&self.model,
+						dom_origin,
+						LookupCall {
+							function: self.ids.conj.into(),
+							arguments: vec![card_constraint, dom_constraint],
+						},
+					);
+					dom_con
+				} else {
+					card_constraint
+				}
 			}
 			DomainConstraint::Array(origin, idx_set, dom) => {
 				let mut constraints = Vec::with_capacity(2);
@@ -787,6 +963,45 @@ impl<Dst: Marker, Src: Marker> DomainRewriter<Dst, Src> {
 				);
 				Expression::new(db, &self.model, domain.origin(), record)
 			}
+			DomainData::Set(_, Some(e)) => {
+				let dom_decl = Declaration::new(false, self.fold_domain(db, model, domain));
+				let dom_idx = self
+					.model
+					.add_declaration(Item::new(dom_decl, domain.origin()));
+				let dom_expr = Expression::new(db, &self.model, domain.origin(), dom_idx);
+				let_items.push(LetItem::Declaration(dom_idx));
+
+				let card = self.fold_expression(db, model, e);
+				let card_decl = Declaration::from_expression(db, false, card);
+				let card_idx = self.model.add_declaration(Item::new(card_decl, e.origin()));
+				let_items.push(LetItem::Declaration(card_idx));
+
+				let name = Expression::new(
+					db,
+					&self.model,
+					domain.origin(),
+					StringLiteral::new("<unnamed>", db.upcast()),
+				);
+				let card_constraint = Expression::new(
+					db,
+					&self.model,
+					e.origin(),
+					LookupCall {
+						function: self.ids.mzn_card_constraint.into(),
+						arguments: vec![
+							name,
+							dom_expr.clone(),
+							Expression::new(db, &self.model, e.origin(), card_idx),
+						],
+					},
+				);
+				let constraint = Constraint::new(false, card_constraint);
+				let constraint_idx = self
+					.model
+					.add_constraint(Item::new(constraint, domain.origin()));
+				let_items.push(LetItem::Constraint(constraint_idx));
+				dom_expr
+			}
 			_ => {
 				let dom_decl = Declaration::new(false, self.fold_domain(db, model, domain));
 				let dom_idx = self
@@ -1096,6 +1311,40 @@ mod test {
       var int: _DECL_6 = x;
       constraint mzn_domain_constraint("<return value>", _DECL_6, _DECL_5);
     } in _DECL_6;
+"#]),
+		)
+	}
+
+	#[test]
+	fn test_set_card() {
+		check(
+			rewrite_domains,
+			r#"
+				var set(2..4) of 1..10: x;
+				constraint let {
+					var set(3..5) of 1..12: y;
+				} in true;
+				tuple(set(1..4) of 4..6): z1;
+				tuple(var set(1..7) of 2..9): z2;
+			"#,
+			expect!([r#"
+    set of int: _DECL_1 = '..'(2, 4);
+    var set of '..'(1, 10): x;
+    constraint mzn_card_constraint("x", x, _DECL_1);
+    constraint let {
+      set of int: _DECL_2 = '..'(3, 5);
+      var set of '..'(1, 12): y;
+      constraint mzn_card_constraint("y", y, _DECL_2);
+    } in true;
+    set of int: _DECL_3 = '..'(1, 4);
+    set of int: _DECL_4 = '..'(4, 6);
+    tuple(set of int): z1;
+    constraint '/\'(mzn_card_constraint(mzn_show_tuple_access("z1", 1), (z1).1, _DECL_3), mzn_domain_constraint(mzn_show_tuple_access("z1", 1), (z1).1, _DECL_4));
+    tuple(var set of int): z2 = let {
+      var set of '..'(2, 9): _DECL_5;
+      set of int: _DECL_6 = '..'(1, 7);
+      constraint mzn_card_constraint("<unnamed>", _DECL_5, _DECL_6);
+    } in (_DECL_5,);
 "#]),
 		)
 	}

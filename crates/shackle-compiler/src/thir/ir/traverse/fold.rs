@@ -1421,11 +1421,12 @@ pub fn fold_domain<'a, T: Marker, U: Marker, F: Folder<'a, U, T> + ?Sized>(
 				.collect::<Vec<_>>();
 			Domain::record(db, origin, opt, fields)
 		}
-		DomainData::Set(d) => {
+		DomainData::Set(d, c) => {
 			let inst = ty.inst(db.upcast()).unwrap();
 			let opt = ty.opt(db.upcast()).unwrap();
 			let element = folder.fold_domain(db, model, d);
-			Domain::set(db, origin, inst, opt, element)
+			let cardinality = c.as_ref().map(|c| folder.fold_expression(db, model, c));
+			Domain::set_with_card(db, origin, inst, opt, cardinality, element)
 		}
 		DomainData::Tuple(items) => {
 			let opt = ty.opt(db.upcast()).unwrap();

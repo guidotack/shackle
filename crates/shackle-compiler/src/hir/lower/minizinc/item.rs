@@ -496,16 +496,13 @@ impl ItemCollector<'_> {
 		let mut ctx = ExpressionCollector::new(self.db, self.identifiers, &mut self.diagnostics);
 		let pattern = ctx.collect_pattern(t.name().into());
 		let extends = t.extends().map(|e| ctx.collect_expression(e.into()));
-		let items = t
-			.items()
-			.map(|f| ctx.collect_class_item(f))
-			.collect();
+		let items = t.items().map(|f| ctx.collect_class_item(f)).collect();
 		let (data, source_map) = ctx.finish();
 		let index = self.model.classdecls.insert(Item::new(
 			Class {
 				pattern,
 				extends,
-				items
+				items,
 			},
 			data,
 		));

@@ -104,7 +104,30 @@ impl<T: Marker> Domain<T> {
 			.with_opt(db.upcast(), opt);
 		Self {
 			ty,
-			data: DomainData::Set(Box::new(element)),
+			data: DomainData::Set(Box::new(element), None),
+			origin: origin.into(),
+		}
+	}
+
+	/// Create a set variable domain with cardinality
+	///
+	/// E.g. `var set(3..5) of 1..3`
+	pub fn set_with_card(
+		db: &dyn Thir,
+		origin: impl Into<Origin>,
+		inst: VarType,
+		opt: OptType,
+		cardinality: Option<Expression<T>>,
+		element: Domain<T>,
+	) -> Self {
+		let ty = Ty::par_set(db.upcast(), element.ty())
+			.expect("Invalid set element type")
+			.with_inst(db.upcast(), inst)
+			.expect("Cannot make var set domain")
+			.with_opt(db.upcast(), opt);
+		Self {
+			ty,
+			data: DomainData::Set(Box::new(element), cardinality),
 			origin: origin.into(),
 		}
 	}
@@ -197,7 +220,7 @@ impl<T: Marker> Domain<T> {
 					todo.push(el);
 					todo.push(dim);
 				}
-				DomainData::Set(el) => {
+				DomainData::Set(el, _) => {
 					todo.push(el);
 				}
 				DomainData::Tuple(fields) => {
@@ -241,7 +264,7 @@ pub enum DomainData<T: Marker = ()> {
 	/// Array index sets and element domain
 	Array(Box<Domain<T>>, Box<Domain<T>>),
 	/// Set domain
-	Set(Box<Domain<T>>),
+	Set(Box<Domain<T>>, Option<Expression<T>>),
 	/// Tuple domain
 	Tuple(Vec<Domain<T>>),
 	/// Record domain

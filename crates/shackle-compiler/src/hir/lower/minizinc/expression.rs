@@ -440,13 +440,11 @@ impl ExpressionCollector<'_> {
 					domain: self.alloc_expression(origin, ident),
 				}
 			}
-			minizinc::Domain::NewType(e) => {
-				Type::New {
-					inst: b.var_type().unwrap_or(VarType::Par),
-					opt: b.opt_type().unwrap_or(OptType::NonOpt),
-					domain: self.collect_expression(e.name().into()),
-				}
-			}
+			minizinc::Domain::NewType(e) => Type::New {
+				inst: b.var_type().unwrap_or(VarType::Par),
+				opt: b.opt_type().unwrap_or(OptType::NonOpt),
+				domain: self.collect_expression(e.name().into()),
+			},
 		}
 	}
 

@@ -7,6 +7,7 @@ use std::{collections::HashSet, path::Path, sync::Arc};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{
+	class_analysis::ClassAnalysisResult,
 	ids::{EntityRef, EntityRefData, ItemRef, ItemRefData, PatternRef},
 	scope::{ScopeData, ScopeResult},
 	source::SourceMap,
@@ -212,6 +213,10 @@ pub trait Hir:
 
 	/// Get counts of entities across all models
 	fn entity_counts(&self) -> Arc<EntityCounts>;
+
+	/// Get the result of the object cardinality analysis
+	#[salsa::invoke(super::class_analysis::analyse_new_objects)]
+	fn class_analysis(&self) -> Arc<ClassAnalysisResult>;
 }
 
 fn run_hir_phase(db: &dyn Hir) -> Result<Arc<Vec<ItemRef>>, Arc<Diagnostics<Error>>> {

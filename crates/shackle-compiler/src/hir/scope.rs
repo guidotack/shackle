@@ -222,7 +222,6 @@ pub fn collect_global_scope(db: &dyn Hir) -> (Arc<ScopeData>, Arc<Vec<Error>>) {
 				_ => unreachable!("Class declaration must have identifier pattern"),
 			}
 		}
-
 	}
 	log::info!(
 		"{} atoms, {} variables, {} function names in global scope",
@@ -761,7 +760,16 @@ impl ScopeCollector<'_> {
 				self.collect_type(*dimensions);
 				self.collect_type(*element);
 			}
-			Type::Set { element, .. } => self.collect_type(*element),
+			Type::Set {
+				element,
+				cardinality,
+				..
+			} => {
+				self.collect_type(*element);
+				if let Some(c) = cardinality {
+					self.collect_expression(*c);
+				}
+			}
 			Type::Tuple { fields, .. } => {
 				for f in fields.iter() {
 					self.collect_type(*f);
@@ -781,6 +789,9 @@ impl ScopeCollector<'_> {
 				for p in parameter_types.iter() {
 					self.collect_type(*p)
 				}
+			}
+			Type::New { inst, opt, domain } => {
+				self.collect_expression(*domain);
 			}
 			_ => {}
 		}
@@ -1094,8 +1105,17 @@ pub fn collect_item_scope(db: &dyn Hir, item: ItemRef) -> ScopeCollectorResult {
 				collector.collect_expression(base);
 			}
 			collector.push();
-			let Scope::Local {scope,.. } = &mut collector.scopes[collector.current] else {unreachable!()};
-			scope.add_variable(db, Identifier::new("this", db), 0, PatternRef::new(item, class.pattern)).unwrap();
+			let Scope::Local { scope, .. } = &mut collector.scopes[collector.current] else {
+				unreachable!()
+			};
+			scope
+				.add_variable(
+					db,
+					Identifier::new("this", db),
+					0,
+					PatternRef::new(item, class.pattern),
+				)
+				.unwrap();
 			for class_item in class.items.iter() {
 				match class_item {
 					ClassItem::Constraint(c) => {

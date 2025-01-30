@@ -191,7 +191,7 @@ pub struct Class {
 	/// The base class
 	pub extends: Option<ArenaIndex<Expression>>,
 	/// Class items
-	pub items: Box<[ClassItem]>,	
+	pub items: Box<[ClassItem]>,
 }
 
 /// Item in a let expression
@@ -205,7 +205,6 @@ pub enum ClassItem {
 
 impl_enum_from!(ClassItem::Declaration);
 impl_enum_from!(ClassItem::Constraint);
-
 
 /// A constructor atom or function for an enum or annotations
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]

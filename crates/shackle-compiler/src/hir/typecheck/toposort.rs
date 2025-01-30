@@ -16,7 +16,7 @@ use crate::{
 	hir::{
 		db::Hir,
 		ids::{ExpressionRef, ItemRef, LocalItemRef, NodeRef, PatternRef},
-		Expression, Goal, Pattern, Type,
+		ClassItem, Expression, Goal, Pattern, Type,
 	},
 	ty::FunctionEntry,
 	utils::DebugPrint,
@@ -293,9 +293,42 @@ impl<'a> TopoSorter<'a> {
 			}
 			LocalItemRef::Class(c) => {
 				let p = PatternRef::new(item, model[c].pattern);
+				let class_analysis_res = self.db.class_analysis();
 				self.current.insert(p);
-				if let Some(base) = model[c].extends {
-					self.visit_expression(ExpressionRef::new(item, base), None);
+				if let Some(sub_p) = class_analysis_res.map_class_to_subclasses.get(&p) {
+					for sp in sub_p.iter() {
+						self.run(sp.item());
+					}
+				}
+				for class_item in model[c].items.iter() {
+					match class_item {
+						ClassItem::Declaration(d) => {
+							let data = local_item.data(&model);
+							let pats = Pattern::identifiers(d.pattern, data)
+								.map(|p| PatternRef::new(item, p))
+								.collect::<Vec<_>>();
+							self.current.extend(pats.iter().copied());
+							for e in Type::expressions(d.declared_type, data) {
+								self.visit_expression(ExpressionRef::new(item, e), None);
+							}
+							for ann in d.annotations.iter() {
+								self.visit_expression(ExpressionRef::new(item, *ann), None);
+							}
+							if let Some(def) = d.definition {
+								self.visit_expression(ExpressionRef::new(item, def), None);
+							}
+
+							for p in pats.iter() {
+								self.current.remove(p);
+							}
+						}
+						ClassItem::Constraint(c) => {
+							for ann in c.annotations.iter() {
+								self.visit_expression(ExpressionRef::new(item, *ann), None);
+							}
+							self.visit_expression(ExpressionRef::new(item, c.expression), None);
+						}
+					}
 				}
 				self.current.remove(&p);
 			}
@@ -443,6 +476,28 @@ mod test {
     int: y;
     int: x;
     x = y;
+"#]),
+		);
+	}
+
+	#[test]
+	fn test_class_topological_sort() {
+		check_toposort(
+			r#"
+			class C (set of new A: as);
+			var new A: a1;
+			var new B: b2;
+			class A (int: x);
+			class B extends A(int: y);
+
+			var new B: b1;
+		"#,
+			expect!([r#"
+    class B extends A(int: y);
+    class A (int: x);
+    var new A: a1;
+    var new B: b2;
+    var new B: b1;
 "#]),
 		);
 	}

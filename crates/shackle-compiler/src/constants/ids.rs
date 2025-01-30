@@ -149,6 +149,7 @@ id_registry!(
 	mzn_opt_domain,
 	mzn_opt_channel,
 	mzn_domain_constraint,
+	mzn_card_constraint,
 	mzn_check_index_set,
 	mzn_show_array_access,
 	mzn_show_tuple_access,
@@ -163,4 +164,7 @@ id_registry!(
 	mzn_construct_partial,
 	mzn_destruct_partial,
 	mzn_unreachable,
+	min,
+	max,
+	length
 );

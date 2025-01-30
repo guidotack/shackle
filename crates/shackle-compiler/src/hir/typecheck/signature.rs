@@ -9,10 +9,14 @@ use super::{EnumConstructorEntry, PatternTy, TypeCompletionMode, TypeContext, Ty
 use crate::{
 	diagnostics::{SyntaxError, TypeInferenceFailure, TypeMismatch},
 	hir::{
-		db::Hir, ids::{EntityRef, ExpressionRef, ItemRef, LocalItemRef, NodeRef, PatternRef}, ClassItem, Constructor, ConstructorParameter, EnumConstructor, Goal, ItemData, Pattern, Type
+		db::Hir,
+		ids::{EntityRef, ExpressionRef, ItemRef, LocalItemRef, NodeRef, PatternRef, TypeRef},
+		ClassItem, Constructor, ConstructorParameter, EnumConstructor, Goal, Identifier, ItemData,
+		Pattern, Type,
 	},
 	ty::{
-		ClassRef, EnumRef, FunctionEntry, FunctionType, OverloadedFunction, PolymorphicFunctionType, Ty, TyData, TyVar, TyVarRef
+		ClassRef, EnumRef, FunctionEntry, FunctionType, OverloadedFunction,
+		PolymorphicFunctionType, Ty, TyData, TyVar, TyVarRef,
 	},
 	Error,
 };
@@ -28,6 +32,8 @@ pub struct SignatureTypes {
 	pub identifier_resolution: FxHashMap<ExpressionRef, PatternRef>,
 	/// Pattern resolution
 	pub pattern_resolution: FxHashMap<PatternRef, PatternRef>,
+	/// Types of TypeRefs
+	pub types: FxHashMap<TypeRef, Ty>,
 }
 
 /// Context for typing an item signature
@@ -47,6 +53,7 @@ impl SignatureTypeContext {
 				expressions: FxHashMap::default(),
 				identifier_resolution: FxHashMap::default(),
 				pattern_resolution: FxHashMap::default(),
+				types: FxHashMap::default(),
 			},
 			diagnostics: Vec::new(),
 		}
@@ -447,13 +454,28 @@ impl SignatureTypeContext {
 
 				self.add_declaration(pat, PatternTy::Computing);
 
+				let mut record_ty_fields = Vec::new();
+
 				if let Some(base) = it.extends {
 					let mut typer = Typer::new(db, self, itemref, data);
 					let base_type = typer.collect_expression(base);
-					if let Some(_) = base_type.class_type(db.upcast()) {
+					if let Some(class_type) = base_type.class_type(db.upcast()) {
 						class_decl_type.superclass = Some(base_type);
+						match self.type_pattern(db, class_type.pattern(db.upcast())) {
+							PatternTy::ClassDecl {
+								input_record_ty, ..
+							} => {
+								if let Some(fields) = input_record_ty.record_fields(db.upcast()) {
+									record_ty_fields.extend(
+										fields.into_iter().map(|(is, ty)| (Identifier(is), ty)),
+									);
+								}
+							}
+							_ => unreachable!(),
+						}
 					} else {
-						let (src, span) = NodeRef::from(EntityRef::new(db, item, base)).source_span(db);
+						let (src, span) =
+							NodeRef::from(EntityRef::new(db, item, base)).source_span(db);
 						self.add_diagnostic(
 							item,
 							TypeMismatch {
@@ -468,7 +490,19 @@ impl SignatureTypeContext {
 					}
 				}
 
-				self.add_declaration(pat, PatternTy::ClassDecl(Ty::class(db.upcast(), class_decl_type.clone())));
+				let error_ty = db.type_registry().error;
+
+				self.add_declaration(
+					pat,
+					PatternTy::ClassDecl {
+						defining_set_ty: Ty::par_set(
+							db.upcast(),
+							Ty::class(db.upcast(), class_decl_type.clone()),
+						)
+						.unwrap(),
+						input_record_ty: error_ty,
+					},
+				);
 
 				for item in it.items.iter() {
 					match item {
@@ -481,14 +515,41 @@ impl SignatureTypeContext {
 						}
 						ClassItem::Declaration(d) => {
 							let mut typer = Typer::new(db, self, itemref, data);
+							let field_name =
+								PatternRef::new(itemref, d.pattern).identifier(db).unwrap();
 							let ty = typer.collect_declaration(d);
-							class_decl_type.attributes.push((PatternRef::new(itemref, d.pattern).identifier(db).unwrap(), ty));
-							self.add_declaration(pat, PatternTy::ClassDecl(Ty::class(db.upcast(), class_decl_type.clone())));
+							if let Some(record_ty) =
+								typer.class_type_to_input_record_type(d.declared_type)
+							{
+								record_ty_fields.push((field_name, record_ty));
+							}
+							class_decl_type.attributes.push((field_name, ty));
+							self.add_declaration(
+								pat,
+								PatternTy::ClassDecl {
+									defining_set_ty: Ty::par_set(
+										db.upcast(),
+										Ty::class(db.upcast(), class_decl_type.clone()),
+									)
+									.unwrap(),
+									input_record_ty: error_ty,
+								},
+							);
 						}
 					}
-				}			
+				}
 
-				self.add_declaration(pat, PatternTy::ClassDecl(Ty::class(db.upcast(), class_decl_type)));
+				self.add_declaration(
+					pat,
+					PatternTy::ClassDecl {
+						defining_set_ty: Ty::par_set(
+							db.upcast(),
+							Ty::class(db.upcast(), class_decl_type.clone()),
+						)
+						.unwrap(),
+						input_record_ty: Ty::record(db.upcast(), record_ty_fields),
+					},
+				);
 			}
 			_ => unreachable!("Item {:?} does not have signature", it),
 		}
@@ -683,7 +744,10 @@ impl TypeContext for SignatureTypeContext {
 	fn add_declaration(&mut self, pattern: PatternRef, declaration: PatternTy) {
 		let old = self.data.patterns.insert(pattern, declaration);
 		assert!(
-			matches!(old, None | Some(PatternTy::Computing | PatternTy::ClassDecl(_))),
+			matches!(
+				old,
+				None | Some(PatternTy::Computing | PatternTy::ClassDecl { .. })
+			),
 			"Tried to add declaration for {:?} twice",
 			pattern
 		);
@@ -724,6 +788,19 @@ impl TypeContext for SignatureTypeContext {
 		if item == self.starting_item {
 			self.diagnostics.push(e.into());
 		}
+	}
+
+	fn add_type(&mut self, declared_ty: TypeRef, ty: Ty) {
+		let old = self.data.types.insert(declared_ty, ty);
+		assert!(
+			old.is_none(),
+			"Tried to add type for type {:?} twice",
+			declared_ty
+		);
+	}
+
+	fn get_type(&self, db: &dyn Hir, declared_ty: TypeRef) -> Ty {
+		self.data.types[&declared_ty]
 	}
 
 	fn type_pattern(&mut self, db: &dyn Hir, pattern: PatternRef) -> PatternTy {

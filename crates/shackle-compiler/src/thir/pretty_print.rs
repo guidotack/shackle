@@ -374,7 +374,7 @@ impl<'a, T: Marker> PrettyPrinter<'a, T> {
 				.chain([self.pretty_print_expression(e)])
 				.collect::<Vec<_>>()
 				.join(" "),
-			DomainData::Set(s) => ty
+			DomainData::Set(s, None) => ty
 				.inst(self.db.upcast())
 				.into_iter()
 				.flat_map(|i| i.pretty_print())
@@ -384,6 +384,21 @@ impl<'a, T: Marker> PrettyPrinter<'a, T> {
 						.flat_map(|o| o.pretty_print()),
 				)
 				.chain(["set of".to_owned()])
+				.chain([self.pretty_print_domain(s)])
+				.collect::<Vec<_>>()
+				.join(" "),
+			DomainData::Set(s, Some(c)) => ty
+				.inst(self.db.upcast())
+				.into_iter()
+				.flat_map(|i| i.pretty_print())
+				.chain(
+					ty.opt(self.db.upcast())
+						.into_iter()
+						.flat_map(|o| o.pretty_print()),
+				)
+				.chain(["set(".to_owned()])
+				.chain([self.pretty_print_expression(c)])
+				.chain([") of ".to_owned()])
 				.chain([self.pretty_print_domain(s)])
 				.collect::<Vec<_>>()
 				.join(" "),

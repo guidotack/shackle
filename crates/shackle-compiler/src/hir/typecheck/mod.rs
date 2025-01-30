@@ -40,7 +40,7 @@ use rustc_hash::FxHashMap;
 
 use super::{
 	db::Hir,
-	ids::{ExpressionRef, ItemRef, LocalItemRef, PatternRef},
+	ids::{ExpressionRef, ItemRef, LocalItemRef, PatternRef, TypeRef},
 	Expression, Identifier, ItemData, Pattern,
 };
 use crate::{
@@ -389,6 +389,10 @@ pub trait TypeContext {
 	fn add_pattern_resolution(&mut self, pattern: PatternRef, resolution: PatternRef);
 	/// Add an error
 	fn add_diagnostic(&mut self, item: ItemRef, e: impl Into<Error>);
+	/// Add a type
+	fn add_type(&mut self, declared_ty: TypeRef, ty: Ty);
+	/// Get a type
+	fn get_type(&self, db: &dyn Hir, declared_ty: TypeRef) -> Ty;
 
 	/// Type a pattern (or lookup the type if already known)
 	fn type_pattern(&mut self, db: &dyn Hir, pattern: PatternRef) -> PatternTy;
@@ -479,7 +483,10 @@ pub enum PatternTy {
 		destructor: Ty,
 	},
 	/// Class declaration
-	ClassDecl(Ty),
+	ClassDecl {
+		defining_set_ty: Ty,
+		input_record_ty: Ty,
+	},
 	/// Currently computing - if encountered, indicates a cycle
 	Computing,
 }
@@ -544,7 +551,16 @@ impl<'a> DebugPrint<'a> for PatternTy {
 					destructor.pretty_print(db.upcast())
 				)
 			}
-			PatternTy::ClassDecl(c) => c.pretty_print(db.upcast()),
+			PatternTy::ClassDecl {
+				defining_set_ty,
+				input_record_ty,
+			} => {
+				format!(
+					"ClassDecl({}, {})",
+					defining_set_ty.pretty_print(db.upcast()),
+					input_record_ty.pretty_print(db.upcast())
+				)
+			}
 			PatternTy::Computing => "{computing}".to_owned(),
 		}
 	}

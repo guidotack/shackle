@@ -602,8 +602,7 @@ impl ModelIoInterface {
 			}
 			if should_output == Some(true)
 				|| (should_output.is_none()
-					&& decl.top_level()
-					&& !decl.domain().ty().known_par(db.upcast())
+					&& decl.top_level() && !decl.domain().ty().known_par(db.upcast())
 					&& decl.definition().is_none())
 			{
 				insert_decl(&mut output, decl)

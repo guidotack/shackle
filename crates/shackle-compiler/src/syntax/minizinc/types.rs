@@ -2,7 +2,8 @@
 
 use super::{Children, Expression, Identifier};
 use crate::syntax::ast::{
-	ast_enum, ast_node, child_with_field_name, children_with_field_name, optional_child_with_field_name, AstNode
+	ast_enum, ast_node, child_with_field_name, children_with_field_name,
+	optional_child_with_field_name, AstNode,
 };
 
 ast_enum!(
@@ -41,7 +42,7 @@ ast_node!(
 	SetType,
 	var_type,
 	opt_type,
-    cardinality,
+	cardinality,
 	element_type
 );
 
@@ -70,10 +71,10 @@ impl SetType {
 			.unwrap_or(OptType::NonOpt)
 	}
 
-    /// Get the declared cardinality of the set
-    pub fn cardinality(&self) -> Option<Expression> {
-        optional_child_with_field_name(self, "cardinality")
-    }
+	/// Get the declared cardinality of the set
+	pub fn cardinality(&self) -> Option<Expression> {
+		optional_child_with_field_name(self, "cardinality")
+	}
 
 	/// The type contained in the array
 	pub fn element_type(&self) -> Type {
@@ -270,7 +271,7 @@ ast_enum!(
 	"primitive_type" => Unbounded(UnboundedDomain),
 	"type_inst_id" => TypeInstIdentifier,
 	"type_inst_enum_id" => TypeInstEnumIdentifier,
-    "new_type" => NewType,
+	"new_type" => NewType,
 	_ => Bounded(Expression)
 );
 
@@ -295,13 +296,13 @@ impl UnboundedDomain {
 }
 
 ast_node!(
-    /// New type domain
-    NewType,
-    name
+	/// New type domain
+	NewType,
+	name
 );
 
 impl NewType {
-    /// Name of the new type
+	/// Name of the new type
 	pub fn name(&self) -> Identifier {
 		child_with_field_name(self, "type")
 	}

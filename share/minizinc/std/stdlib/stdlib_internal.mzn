@@ -55,6 +55,16 @@ test mzn_domain_constraint(string: name, set of float: x, set of float: s)
 			"' is \(s), but is assigned the value \(x).",
 	);
 
+test mzn_card_constraint(string: name, set of $T: x, set of int: cardinality)
+	:: mzn_inline_call_by_name =
+	mzn_assert_warn(
+		card(x) in cardinality,
+		"the cardinality of '" ++
+			name ++
+			"' is \(card(x)), but the type-inst constrains the cardinality to \(cardinality).",
+	);
+
+
 predicate mzn_domain_constraint(string: name, var $$E: x, set of $$E: s)
 	:: mzn_inline_call_by_name = var_dom(erase_enum(x), erase_enum(s));
 predicate mzn_domain_constraint(string: name, var opt $$E: x, set of $$E: s)
@@ -65,6 +75,8 @@ predicate mzn_domain_constraint(string: name, var float: x, set of float: s)
 	:: mzn_inline_call_by_name = var_dom(x, s);
 predicate mzn_domain_constraint(string: name, var opt float: x, set of float: s)
 	:: mzn_inline_call_by_name = var_dom(x, s);
+predicate mzn_card_constraint(string: name, var set of $$T: x, set of int: cardinality)
+	:: mzn_inline_call_by_name = card(x) in cardinality;
 
 test var_dom(int: x, set of int: s) = x in s;
 predicate var_dom(var int: x, set of int: s) =

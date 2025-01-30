@@ -15,6 +15,7 @@
 //!   module
 //! - Validation of whole program (see the `validate` module)
 
+pub mod class_analysis;
 pub mod container;
 pub mod db;
 pub mod expression;

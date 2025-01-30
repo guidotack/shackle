@@ -10,10 +10,10 @@ use super::{PatternTy, TypeContext, Typer};
 use crate::{
 	hir::{
 		db::Hir,
-		ids::{ExpressionRef, ItemRef, LocalItemRef, PatternRef},
-		Expression, Pattern,
+		ids::{ExpressionRef, ItemRef, LocalItemRef, PatternRef, TypeRef},
+		Expression, Pattern, Type,
 	},
-	ty::Ty,
+	ty::{Ty, VarType},
 	utils::arena::{ArenaIndex, ArenaMap},
 	Error,
 };
@@ -107,9 +107,44 @@ impl BodyTypeContext {
 			LocalItemRef::Declaration(d) => {
 				let it = &model[d];
 				let signature = db.lookup_item_signature(item);
-				let expected = match &signature.patterns[&PatternRef::new(item, it.pattern)] {
+				let lhs_ty = match &signature.patterns[&PatternRef::new(item, it.pattern)] {
 					PatternTy::Variable(t) | PatternTy::Destructuring(t) => *t,
 					_ => unreachable!(),
+				};
+				let expected = match &data[it.declared_type] {
+					Type::New {
+						inst: VarType::Par,
+						opt,
+						domain,
+					} => {
+						if let Some(class_ty) = lhs_ty.class_type(db.upcast()) {
+							typer
+								.class_type_to_input_record_type(it.declared_type)
+								.unwrap()
+						} else {
+							lhs_ty
+						}
+					}
+					Type::Set {
+						inst: VarType::Par,
+						opt,
+						cardinality,
+						element,
+					} => {
+						if let Type::New {
+							inst: VarType::Par,
+							opt,
+							domain,
+						} = &data[*element]
+						{
+							typer
+								.class_type_to_input_record_type(it.declared_type)
+								.unwrap()
+						} else {
+							lhs_ty
+						}
+					}
+					_ => lhs_ty,
 				};
 				// Declarations with incomplete types would have been done during signature typing
 				if data[it.declared_type].is_complete(data) {
@@ -244,6 +279,13 @@ impl TypeContext for BodyTypeContext {
 		let error = e.into();
 		assert_eq!(item, self.item, "Got error '{}' for wrong item", error);
 		self.diagnostics.push(error);
+	}
+
+	fn add_type(&mut self, declared_ty: TypeRef, ty: Ty) {}
+
+	fn get_type(&self, db: &dyn Hir, declared_ty: TypeRef) -> Ty {
+		let signature = db.lookup_item_signature(declared_ty.item());
+		signature.types[&declared_ty].clone()
 	}
 
 	fn type_pattern(&mut self, db: &dyn Hir, pattern: PatternRef) -> PatternTy {

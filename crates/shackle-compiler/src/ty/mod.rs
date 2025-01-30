@@ -173,6 +173,7 @@ impl Ty {
 			TyData::Function(_, _) if inst == VarType::Par => return Some(*self),
 			TyData::TyVar(_, o, t) if t.varifiable => TyData::TyVar(Some(inst), o, t),
 			TyData::Bottom(_) | TyData::Error => return Some(*self),
+			TyData::Class(_, o, c) => TyData::Class(inst, o, c),
 			_ => return None,
 		};
 		Some(db.intern_ty(result))
@@ -255,6 +256,7 @@ impl Ty {
 				| TyData::Bottom(_)
 				| TyData::Function(_, _)
 				| TyData::Set(VarType::Par, _, _)
+				| TyData::Class(VarType::Par, _, _)
 				| TyData::TyVar(Some(VarType::Par), _, _) => (),
 				TyData::Array { dim, element, .. } => {
 					todo.push(dim);
@@ -283,6 +285,7 @@ impl Ty {
 				| TyData::Function(OptType::NonOpt, _)
 				| TyData::Set(_, OptType::NonOpt, _)
 				| TyData::TyVar(_, Some(OptType::NonOpt), _)
+				| TyData::Class(_, OptType::NonOpt, _)
 				| TyData::Array {
 					opt: OptType::NonOpt,
 					..
@@ -303,6 +306,7 @@ impl Ty {
 			| TyData::Bottom(OptType::NonOpt)
 			| TyData::Boolean(_, OptType::NonOpt)
 			| TyData::Integer(_, OptType::NonOpt)
+			| TyData::Class(_, OptType::NonOpt, _)
 			| TyData::Enum(_, OptType::NonOpt, _) => true,
 			TyData::TyVar(_, Some(OptType::NonOpt), t) => t.enumerable,
 			_ => false,
@@ -324,10 +328,10 @@ impl Ty {
 	}
 
 	pub fn class_type(&self, db: &dyn Interner) -> Option<ClassRef> {
-		if let TyData::Class(_, _, c) = self.lookup(db) {
-			Some(c)
-		} else {
-			None
+		match self.lookup(db) {
+			TyData::Class(_, _, c) => Some(c),
+			TyData::Set(_, _, t) => t.class_type(db),
+			_ => None,
 		}
 	}
 
@@ -492,6 +496,7 @@ impl Ty {
 			| TyData::Float(inst, _)
 			| TyData::Enum(inst, _, _)
 			| TyData::Set(inst, _, _)
+			| TyData::Class(inst, _, _)
 			| TyData::TyVar(Some(inst), _, _) => Some(inst),
 
 			TyData::Error
@@ -521,6 +526,7 @@ impl Ty {
 			| TyData::TyVar(_, Some(opt), _)
 			| TyData::Array { opt, .. }
 			| TyData::Tuple(opt, _)
+			| TyData::Class(_, opt, _)
 			| TyData::Record(opt, _) => Some(opt),
 			TyData::Error => Some(OptType::NonOpt),
 			_ => None,
@@ -1099,8 +1105,10 @@ impl Ty {
 				}
 				(TyData::Record(o1, f1), TyData::Record(o2, f2)) => {
 					if o1 != OptType::NonOpt && o1 != o2
-						|| f1.len() != f2.len()
-						|| !f1.iter().zip(f2.iter()).all(|((i1, _), (i2, _))| i1 == i2)
+						|| f1.len() != f2.len() || !f1
+						.iter()
+						.zip(f2.iter())
+						.all(|((i1, _), (i2, _))| i1 == i2)
 					{
 						return false;
 					}
@@ -1132,7 +1140,7 @@ impl Ty {
 				}
 				(TyData::Class(var1, opt1, class1), TyData::Class(var2, opt2, class2)) => {
 					if var1 != VarType::Par && var1 != var2
-					|| opt1 != OptType::NonOpt && opt1 != opt2
+						|| opt1 != OptType::NonOpt && opt1 != opt2
 					{
 						return false;
 					}
@@ -1467,7 +1475,11 @@ pub struct ClassRef {
 impl ClassRef {
 	/// Create a new enum
 	pub fn new(db: &dyn Hir, pattern: PatternRef) -> Self {
-		Self { newtype: NewType::from_pattern(db, pattern), attributes: vec![], superclass: None }
+		Self {
+			newtype: NewType::from_pattern(db, pattern),
+			attributes: vec![],
+			superclass: None,
+		}
 	}
 
 	/// Get pattern reference
@@ -1489,10 +1501,9 @@ impl ClassRef {
 	}
 
 	/// Get iterator over all superclasses of this class (including the class itself)
-	pub fn superclasses<'a>(&self, db: &'a dyn Interner) -> impl Iterator<Item = ClassRef> +'a {
-		
+	pub fn superclasses<'a>(&self, db: &'a dyn Interner) -> impl Iterator<Item = ClassRef> + 'a {
 		let mut cur_class = Some(self.clone());
-		std::iter::from_fn( move || {
+		std::iter::from_fn(move || {
 			if let Some(class) = cur_class.take() {
 				cur_class = class.superclass.and_then(|s| s.class_type(db));
 				return Some(class);
@@ -1505,9 +1516,6 @@ impl ClassRef {
 	pub fn is_subclass_of(&self, db: &dyn Interner, other: &ClassRef) -> bool {
 		self.superclasses(db).any(|c| c == *other)
 	}
-
-
-
 }
 
 /// The type of a reference to a type-inst var

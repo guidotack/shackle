@@ -164,7 +164,7 @@ impl Type {
 		data: &ItemData,
 	) -> impl '_ + Iterator<Item = ArenaIndex<Expression>> {
 		Type::walk(t, data).filter_map(|t| {
-			if let Type::Bounded { domain, .. } = data[t] {
+			if let Type::Bounded { domain, .. } | Type::New { domain, .. } = data[t] {
 				Some(domain)
 			} else {
 				None
@@ -204,5 +204,13 @@ impl Type {
 			}
 			Some(t)
 		})
+	}
+
+	pub fn is_new(&self, data: &ItemData) -> bool {
+		match self {
+			Type::New { .. } => true,
+			Type::Set { element, .. } => data[*element].is_new(data),
+			_ => false,
+		}
 	}
 }

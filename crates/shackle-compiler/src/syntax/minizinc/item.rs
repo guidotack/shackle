@@ -487,13 +487,12 @@ impl ClassDecl {
 	pub fn extends(&self) -> Option<Identifier> {
 		optional_child_with_field_name(self, "extends")
 	}
-	
+
 	/// The items of the let expression
 	pub fn items(&self) -> Children<'_, ClassItem> {
 		children_with_field_name(self, "item")
 	}
 }
-
 
 #[cfg(test)]
 mod test {
@@ -1099,5 +1098,5 @@ class A extends B (
     )
 "#]),
 		);
-	}	
+	}
 }
