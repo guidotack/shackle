@@ -492,16 +492,24 @@ impl SignatureTypeContext {
 
 				let error_ty = db.type_registry().error;
 
+				let class_ty = Ty::class(db.upcast(), class_decl_type.clone());
+
 				self.add_declaration(
 					pat,
 					PatternTy::ClassDecl {
 						defining_set_ty: Ty::par_set(
 							db.upcast(),
-							Ty::class(db.upcast(), class_decl_type.clone()),
+							class_ty,
 						)
 						.unwrap(),
 						input_record_ty: error_ty,
 					},
+				);
+
+				let this_pat = PatternRef::new(item, it.this_pattern);
+				self.add_declaration(
+					this_pat,
+					PatternTy::Variable(class_ty)
 				);
 
 				for item in it.items.iter() {
@@ -524,31 +532,41 @@ impl SignatureTypeContext {
 								record_ty_fields.push((field_name, record_ty));
 							}
 							class_decl_type.attributes.push((field_name, ty));
+							let class_ty = Ty::class(db.upcast(), class_decl_type.clone());
 							self.add_declaration(
 								pat,
 								PatternTy::ClassDecl {
 									defining_set_ty: Ty::par_set(
 										db.upcast(),
-										Ty::class(db.upcast(), class_decl_type.clone()),
+										class_ty,
 									)
 									.unwrap(),
 									input_record_ty: error_ty,
 								},
 							);
+							self.add_declaration(
+								this_pat,
+								PatternTy::Variable(class_ty)
+							);
 						}
 					}
 				}
 
+				let class_ty = Ty::class(db.upcast(), class_decl_type.clone());
 				self.add_declaration(
 					pat,
 					PatternTy::ClassDecl {
 						defining_set_ty: Ty::par_set(
 							db.upcast(),
-							Ty::class(db.upcast(), class_decl_type.clone()),
+							class_ty,
 						)
 						.unwrap(),
 						input_record_ty: Ty::record(db.upcast(), record_ty_fields),
 					},
+				);
+				self.add_declaration(
+					this_pat,
+					PatternTy::Variable(class_ty)
 				);
 			}
 			_ => unreachable!("Item {:?} does not have signature", it),
@@ -746,7 +764,7 @@ impl TypeContext for SignatureTypeContext {
 		assert!(
 			matches!(
 				old,
-				None | Some(PatternTy::Computing | PatternTy::ClassDecl { .. })
+				None | Some(PatternTy::Computing | PatternTy::ClassDecl { .. } | PatternTy::Variable(_))
 			),
 			"Tried to add declaration for {:?} twice",
 			pattern

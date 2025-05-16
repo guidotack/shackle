@@ -188,6 +188,8 @@ pub struct Declaration {
 pub struct Class {
 	/// Pattern being declared (always an identifier)
 	pub pattern: ArenaIndex<Pattern>,
+	/// Pattern used for "this" expressions in class constraints
+	pub this_pattern: ArenaIndex<Pattern>,
 	/// The base class
 	pub extends: Option<ArenaIndex<Expression>>,
 	/// Class items

@@ -1113,7 +1113,7 @@ pub fn collect_item_scope(db: &dyn Hir, item: ItemRef) -> ScopeCollectorResult {
 					db,
 					Identifier::new("this", db),
 					0,
-					PatternRef::new(item, class.pattern),
+					PatternRef::new(item, class.this_pattern),
 				)
 				.unwrap();
 			for class_item in class.items.iter() {

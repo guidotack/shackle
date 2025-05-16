@@ -23,10 +23,11 @@ impl RequestHandler<ViewPrettyPrint, ModelRef> for ViewPrettyPrintHandler {
 	fn execute(db: &CompilerDatabase, _: ModelRef) -> Result<String, ResponseError> {
 		let errors = db.all_errors();
 		if errors.is_empty() {
-			let thir = match db.final_thir() {
-				Ok(m) => m,
-				Err(e) => return Ok(format!("%: THIR error: {}", e)),
-			};
+			// let thir = match db.final_thir() {
+			// 	Ok(m) => m,
+			// 	Err(e) => return Ok(format!("%: THIR error: {}", e)),
+			// };
+			let thir = db.model_thir().take();
 			let printer = PrettyPrinter::new(db, &thir);
 			Ok(printer.pretty_print())
 		} else {
