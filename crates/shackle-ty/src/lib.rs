@@ -778,15 +778,13 @@ impl<'db> Ty<'db> {
 					(TyData::Enum(i1, o1, e1), TyData::Enum(i2, o2, e2)) if e1 == e2 => {
 						TyData::Enum((*i1).max(*i2), (*o1).max(*o2), *e1)
 					}
-					(TyData::Class(i1, o1, c1), TyData::Class(i2, o2, c2))
-						if c1.is_subclass_of(db, c2) =>
-					{
-						TyData::Class((*i1).max(*i2), (*o1).max(*o2), *c2)
-					}
-					(TyData::Class(i1, o1, c1), TyData::Class(i2, o2, c2))
-						if c2.is_subclass_of(db, c1) =>
-					{
-						TyData::Class((*i1).max(*i2), (*o1).max(*o2), *c1)
+					(TyData::Class(i1, o1, c1), TyData::Class(i2, o2, c2)) => {
+						// The nearest class both are subclasses of: a class has one
+						// superclass, so this is the first of `c1`'s (including
+						// itself) that `c2` is a subclass of. Unrelated classes have
+						// no supertype.
+						let join = c1.superclasses(db).find(|c| c2.is_subclass_of(db, c))?;
+						TyData::Class((*i1).max(*i2), (*o1).max(*o2), join)
 					}
 					(TyData::String(o1), TyData::String(o2)) => TyData::String((*o1).max(*o2)),
 					(TyData::Annotation(o1), TyData::Annotation(o2)) => {

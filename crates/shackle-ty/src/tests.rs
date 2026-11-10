@@ -810,6 +810,34 @@ fn test_most_specific_supertype() {
 }
 
 #[test]
+fn test_most_specific_supertype_classes() {
+	let database_impl = DatabaseImpl::default();
+	let db = &database_impl;
+	// A, B extends A, C extends A, D extends B, and the unrelated U
+	let class = |name: &str, superclass| {
+		Ty::class(db, ClassRef::new(InternedString::new(db, name), superclass))
+	};
+	let a = class("A", None);
+	let b = class("B", Some(a));
+	let c = class("C", Some(a));
+	let d = class("D", Some(b));
+	let u = class("U", None);
+
+	assert_eq!(Ty::most_specific_supertype(db, [b, b]), Some(b));
+	assert_eq!(Ty::most_specific_supertype(db, [d, a]), Some(a));
+	assert_eq!(Ty::most_specific_supertype(db, [b, d]), Some(b));
+	// The nearest common superclass of siblings and cousins
+	assert_eq!(Ty::most_specific_supertype(db, [b, c]), Some(a));
+	assert_eq!(Ty::most_specific_supertype(db, [d, c]), Some(a));
+	assert_eq!(Ty::most_specific_supertype(db, [c, d, b]), Some(a));
+	assert_eq!(
+		Ty::most_specific_supertype(db, [b.make_var(db).unwrap(), c.make_opt(db)]),
+		Some(a.make_var(db).unwrap().make_opt(db))
+	);
+	assert_eq!(Ty::most_specific_supertype(db, [b, u]), None);
+}
+
+#[test]
 fn test_most_general_subtype() {
 	let database_impl = DatabaseImpl::default();
 	let db = &database_impl;

@@ -691,6 +691,12 @@ fn solve_object_superclass_var_set_chained_roots() {
 }
 
 #[test]
+fn solve_object_sibling_classes() {
+	check_solve("objects/49_sibling_classes", false, false);
+	check_solve("objects/49_sibling_classes", false, true);
+}
+
+#[test]
 fn solve_object_subclass_set_as_superclass() {
 	check_solve("objects/46_subclass_set_as_superclass", false, false);
 	check_solve("objects/46_subclass_set_as_superclass", false, true);
