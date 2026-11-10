@@ -1547,15 +1547,19 @@ impl<'db> ItemCollector<'db> {
 							sum.clone(),
 						);
 				}
-				let name_suffix = if attrib.is_none() && !attrib_path.is_empty() {
-					format!(
-						"{}_{}",
-						start_decl_name,
-						child_class
+				// The path to the slice: its attributes, and for the slice of a
+				// superclass the superclass, so that the slices of the
+				// superclasses of one occurrence have different names
+				let name_suffix = if attrib.is_none() {
+					attrib_path
+						.iter()
+						.map(|a| a.pretty_print(collector.parent.db))
+						.chain([child_class
 							.identifier(collector.parent.db)
 							.unwrap()
-							.pretty_print(collector.parent.db)
-					)
+							.pretty_print(collector.parent.db)])
+						.collect::<Vec<_>>()
+						.join("_")
 				} else {
 					start_decl_name
 				};
