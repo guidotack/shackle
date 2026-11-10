@@ -4,6 +4,7 @@ use shackle_hir::{
 	PatternTy,
 	ids::{EntityRef, PatternRef},
 };
+use shackle_ty::{Ty, TyData};
 
 use crate::{
 	lower::expression::{ExpressionCollector, alloc_expression},
@@ -12,12 +13,18 @@ use crate::{
 };
 
 impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
-	/// Collect array comprehension
+	/// Collect array comprehension of type `ty`
 	pub(super) fn collect_array_comprehension(
 		&mut self,
 		c: &shackle_hir::ArrayComprehension<'db>,
+		ty: Ty<'db>,
 		origin: impl Into<Origin<'db>>,
 	) -> Expression<'db> {
+		let element = self.array_element_ty(ty);
+		let index = match ty.lookup(self.parent.db) {
+			TyData::Array { dim, .. } => Some(*dim),
+			_ => None,
+		};
 		let mut generators = Vec::with_capacity(c.generators.len());
 		for g in c.generators.iter() {
 			self.collect_generator(g, &mut generators);
@@ -25,22 +32,24 @@ impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
 		alloc_expression(
 			ArrayComprehension {
 				generators,
-				template: Box::new(self.collect_expression(c.template)),
+				template: Box::new(self.collect_member(c.template, element)),
 				indices: c
 					.indices
-					.map(|indices| Box::new(self.collect_expression(indices))),
+					.map(|indices| Box::new(self.collect_member(indices, index))),
 			},
 			self,
 			origin,
 		)
 	}
 
-	/// Collect set comprehension
+	/// Collect set comprehension of type `ty`
 	pub(super) fn collect_set_comprehension(
 		&mut self,
 		c: &shackle_hir::SetComprehension<'db>,
+		ty: Ty<'db>,
 		origin: impl Into<Origin<'db>>,
 	) -> Expression<'db> {
+		let element = self.set_element_ty(ty);
 		let mut generators = Vec::with_capacity(c.generators.len());
 		for g in c.generators.iter() {
 			self.collect_generator(g, &mut generators);
@@ -48,7 +57,7 @@ impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
 		alloc_expression(
 			SetComprehension {
 				generators,
-				template: Box::new(self.collect_expression(c.template)),
+				template: Box::new(self.collect_member(c.template, element)),
 			},
 			self,
 			origin,

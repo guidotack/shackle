@@ -998,7 +998,11 @@ impl<'db> ItemCollector<'db> {
 						}
 					}
 					let body = ff.body.unwrap();
-					let collected_body = collector.collect_expression(body);
+					let return_type = match &types[ff.pattern] {
+						PatternTy::Function(fn_entry) => fn_entry.overload.return_type(),
+						_ => unreachable!(),
+					};
+					let collected_body = collector.collect_expression_upcast(body, return_type);
 					let e = if decls.is_empty() {
 						collected_body
 					} else {

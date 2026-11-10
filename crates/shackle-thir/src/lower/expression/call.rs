@@ -1,13 +1,10 @@
 //! Lowering of calls to THIR
 //!
-//! This needs special handling for calls to class comparison operators
+//! This needs special handling for objects passed where a superclass is
+//! expected, and for `show` of objects
 
 use rustc_hash::FxHashMap;
-use shackle_hir::{
-	class_analysis::class_pattern_for,
-	ids::{EntityRef, ExpressionRef, PatternRef},
-};
-use shackle_ty::Ty;
+use shackle_hir::ids::ExpressionRef;
 
 use crate::{
 	lower::{
@@ -18,8 +15,8 @@ use crate::{
 };
 
 impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
-	/// Lower a call, including the cross-class identity coercion applied to
-	/// `=`/`!=` when the two operands' class universes differ.
+	/// Lower a call. Each argument is converted to the parameter type of the
+	/// overload the type checker chose (see `upcast`).
 	pub(super) fn collect_call_expression(
 		&mut self,
 		c: &shackle_hir::Call<'db>,
@@ -53,205 +50,26 @@ impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
 		} else {
 			Callable::Expression(Box::new(self.collect_expression(c.function)))
 		};
-		// Cross-class identity coercion for the equality operators.
-		// `a = b` / `a != b` with `a : var C1`, `b : var C2` where one
-		// class is a subclass of the other lowers each operand into its
-		// OWN potential universe (`C1_potential` vs `C2_potential`),
-		// which MiniZinc rejects as an enum mismatch. The typer unifies
-		// both operands to the join class; each subtype operand is
-		// projected into the join's identity universe with
-		// `project_class_identity` (the ordinal correction), while an
-		// operand already OF the join class keeps its natural enum
-		// lowering — so both operands become the same
-		// `<Join>_potential` value. Projection needs a top-level
-		// occurrence, so it applies to root identifiers (`= s1`); a
-		// subtype operand that is not a projectable root is left as-is
-		// (still a clean type error, not a crash). Gated on `=`/`!=`
-		// (whose two operands share the type variable); every other
-		// call keeps natural-type collection so a function with
-		// genuinely distinct class parameters is never mis-projected.
-		// NOTE: do NOT use `collect_expression_as` here — its
-		// class-target relabel would flip the already-join operand to a
-		// `Class<Join>` type, re-introducing a Class-vs-enum mismatch
-		// against the projected (enum) operand.
-		let eq_db = self.parent.db;
-		let is_equality_op = matches!(
-			&self.data[c.function],
-			shackle_hir::Expression::Identifier(id)
-				if *id == self.parent.ids.functions.eq
-					|| *id == self.parent.ids.functions.lt
-					|| *id == self.parent.ids.functions.ne
-					|| *id == self.parent.ids.functions.le
-					|| *id == self.parent.ids.functions.gt
-					|| *id == self.parent.ids.functions.ge
-		);
-		let class_pattern = |class: shackle_ty::ClassRef<'db>| {
-			class_pattern_for(eq_db, class).expect("class item for class type")
-		};
-		// Resolve the join class and the per-operand occurrence to
-		// project through. The coercion is ALL-OR-NOTHING: it applies
-		// only when every operand whose class differs from the join is
-		// a root identity with a top-level occurrence (the ordinal
-		// correction `project_class_identity` needs) or a
-		// single-contribution reference. If any cross-class operand
-		// cannot be projected, leave every operand at its natural
-		// lowering — a clean MiniZinc type error rather than a
-		// mid-lowering THIR panic from partially-coerced operands.
-		let join_class: Option<PatternRef<'db>> = if is_equality_op && c.arguments.len() == 2 {
-			let arg_classes: Vec<Option<PatternRef<'db>>> = c
-				.arguments
-				.iter()
-				.map(|arg| self.types[*arg].class_type(eq_db).map(class_pattern))
-				.collect();
-			let all_class = arg_classes.iter().all(|c| c.is_some());
-			let distinct = match (arg_classes.first(), arg_classes.get(1)) {
-				(Some(a), Some(b)) => a != b,
-				_ => false,
-			};
-			let join = if all_class && distinct {
-				Ty::most_specific_supertype(eq_db, c.arguments.iter().map(|arg| self.types[*arg]))
-					.and_then(|j| j.class_type(eq_db))
-					.map(class_pattern)
-			} else {
-				None
-			};
-			join.filter(|jc| {
-				c.arguments
-					.iter()
-					.zip(arg_classes.iter())
-					.all(|(arg, sc)| match sc {
-						Some(source_class) if source_class != jc => {
-							let is_root = self
-								.types
-								.name_resolution(*arg)
-								.map(|res| {
-									self.parent
-										.objects
-										.plan
-										.top_level_occurrences
-										.contains_key(&res)
-								})
-								.unwrap_or(false);
-							is_root
-								|| self
-									.reference_projection_join_constructor(*source_class, *jc)
-									.is_some()
-						}
-						_ => true,
-					})
-			})
-		} else {
-			None
-		};
-		// With no projection available and no objects introduced
-		// anywhere — neither operand's class universe has a single
-		// constructor — both reference domains are empty, so the
-		// identities can only be compared as bare ordinals. That
-		// keeps the comparison well-typed (the potential enums are
-		// distinct types) and is vacuously correct over empty
-		// domains.
-		let ordinal_compare = join_class.is_none() && is_equality_op && c.arguments.len() == 2 && {
-			let classes = c
-				.arguments
-				.iter()
-				.map(|arg| self.types[*arg].class_type(eq_db).map(class_pattern))
-				.collect::<Vec<_>>();
-			classes.iter().all(|class| class.is_some())
-				&& classes[0] != classes[1]
-				&& classes.iter().all(|class| {
-					class
-						.and_then(|p| self.parent.objects.class_map.get(&p))
-						.is_some_and(|info| {
-							self.parent.model[info.class_enum]
-								.definition()
-								.is_none_or(|d| d.is_empty())
-						})
-				})
-		};
+		// Each argument is converted to the parameter type of the overload
+		// the type checker chose, so an object of a subclass passed where its
+		// superclass is expected becomes the same object of the superclass
+		// (see `upcast`). Class-typed arguments then take their potential
+		// enum types, which function resolution and type specialisation
+		// instantiate the standard library's enum parameters from.
+		let params = self
+			.types
+			.get_expression(c.function)
+			.and_then(|f| f.function_params(db));
 		let mut arguments = c
 			.arguments
 			.iter()
-			.map(|arg| {
-				let expr = self.collect_expression(*arg);
-				let Some(join_class) = join_class else {
-					let relabeled = self.relabel_class_operand(expr);
-					if ordinal_compare && relabeled.ty().enum_ty(eq_db).is_some() {
-						let arg_origin = EntityRef::new(
-							eq_db,
-							self.item,
-							shackle_hir::ids::EntityId::from(*arg),
-						);
-						return alloc_expression(
-							LookupCall {
-								function: self.parent.ids.functions.enum2int.into(),
-								arguments: vec![relabeled],
-							},
-							self,
-							arg_origin,
-						);
-					}
-					return relabeled;
+			.enumerate()
+			.map(|(i, arg)| {
+				let expr = match params.as_ref().and_then(|params| params.get(i)) {
+					Some(param) => self.collect_expression_upcast(*arg, *param),
+					None => self.collect_expression(*arg),
 				};
-				let arg_origin =
-					EntityRef::new(eq_db, self.item, shackle_hir::ids::EntityId::from(*arg));
-				// Project a subtype root operand into the join's identity
-				// universe (ordinal correction); the result is a
-				// `<Join>_potential` enum value.
-				let projected = match self.types[*arg].class_type(eq_db).map(class_pattern) {
-					Some(source_class) if source_class != join_class => {
-						// A root operand projects through its static
-						// occurrence; a non-root reference (no occurrence)
-						// projects via the single-contribution closed form.
-						match self.types.name_resolution(*arg).and_then(|res| {
-							self.parent
-								.objects
-								.plan
-								.top_level_occurrences
-								.get(&res)
-								.copied()
-						}) {
-							Some(occurrence) => self.project_class_identity(
-								expr,
-								occurrence,
-								source_class,
-								join_class,
-								arg_origin,
-							),
-							None => {
-								let ct = self
-									.reference_projection_join_constructor(source_class, join_class)
-									.expect("join filter guarantees a projectable reference");
-								self.project_reference_identity(expr, join_class, ct, arg_origin)
-							}
-						}
-					}
-					_ => expr,
-				};
-				// Both operands must share the `<Join>_potential` enum
-				// type. `project_class_identity` already yields that
-				// enum, but an operand of the join class that lowered as
-				// a genuine `var Class<Join>` (a par-actual reference)
-				// must be RELABELLED to `var <Join>_potential`, or `=`
-				// sees a Class-vs-enum mismatch. The relabel is cosmetic:
-				// MiniZinc re-types the pretty-printed identifier from
-				// its `var <Join>` declaration, whose values already
-				// range over `<Join>_potential`.
-				if projected.ty().class_type(eq_db).is_some() {
-					let enum_ty = self
-						.parent
-						.substitute_class_with_potential_enum(projected.ty());
-					let mut relabeled = Expression::new_unchecked(
-						enum_ty,
-						(*projected).clone(),
-						projected.origin(),
-					);
-					relabeled
-						.annotations_mut()
-						.extend(projected.annotations().iter().cloned());
-					relabeled
-				} else {
-					projected
-				}
+				self.relabel_class_operand(expr)
 			})
 			.collect::<Vec<_>>();
 

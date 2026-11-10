@@ -165,6 +165,10 @@ pub(in crate::lower) struct ObjectState<'db> {
 	/// `structure.rs`), keyed by the inputs declaration: the projected value
 	/// until it is first needed, then its declaration.
 	inputs_structures: FxHashMap<DeclarationId<'db>, InputsStructure<'db>>,
+	/// `<sub>_to_<sup>` for each (subclass, superclass) pair whose objects are
+	/// converted (see `upcast.rs`), in the order they were first needed;
+	/// defined in `finish`.
+	pub(in crate::lower) upcast_maps: Vec<(PatternRef<'db>, PatternRef<'db>, DeclarationId<'db>)>,
 }
 
 impl<'db> ObjectState<'db> {
@@ -191,6 +195,7 @@ impl<'db> ObjectState<'db> {
 			data_id_blocks: FxHashMap::default(),
 			class_data_objects: FxHashMap::default(),
 			inputs_structures: FxHashMap::default(),
+			upcast_maps: Vec::new(),
 		}
 	}
 }

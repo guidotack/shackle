@@ -25,13 +25,13 @@ impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
 					.map(|b| {
 						Branch::new(
 							self.collect_expression(b.condition),
-							self.collect_expression(b.result),
+							self.collect_expression_upcast(b.result, ty),
 						)
 					})
 					.collect(),
 				else_result: Box::new(
 					ite.else_result
-						.map(|e| self.collect_expression(e))
+						.map(|e| self.collect_expression_upcast(e, ty))
 						.unwrap_or_else(|| self.collect_default_else(ty, origin)),
 				),
 			},

@@ -28,8 +28,14 @@ impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
 		if is_slice {
 			self.collect_slice(aa.collection, aa.indices, origin)
 		} else {
+			// An index that is an object of a subclass of the index class
+			// becomes the same object of the index class
+			let index = match self.types[aa.collection].lookup(self.parent.db) {
+				TyData::Array { dim, .. } => Some(*dim),
+				_ => None,
+			};
 			let c = self.collect_expression(aa.collection);
-			let i = self.collect_expression(aa.indices);
+			let i = self.collect_member(aa.indices, index);
 			self.introduce_array_access(c, i, origin)
 		}
 	}

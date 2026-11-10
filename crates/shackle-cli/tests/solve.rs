@@ -672,6 +672,18 @@ fn solve_object_class_without_objects() {
 	check_solve("objects/43_class_without_objects", false, true);
 }
 
+#[test]
+fn solve_object_subclass_as_superclass() {
+	check_solve("objects/45_subclass_as_superclass", false, false);
+	check_solve("objects/45_subclass_as_superclass", false, true);
+}
+
+#[test]
+fn solve_object_subclass_set_as_superclass() {
+	check_solve("objects/46_subclass_set_as_superclass", false, false);
+	check_solve("objects/46_subclass_set_as_superclass", false, true);
+}
+
 /// Only with the MicroZinc target: the MiniZinc target lacks the library
 /// functions that objects in data use (`mzn_object_data_ids`)
 #[test]

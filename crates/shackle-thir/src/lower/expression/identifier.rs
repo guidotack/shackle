@@ -52,19 +52,7 @@ impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
 				class_pattern_for(db, source_class).expect("class item for class type");
 			let target_class =
 				class_pattern_for(db, target_class).expect("class item for class type");
-			let source_occurrence = self
-				.parent
-				.objects
-				.plan
-				.top_level_occurrences
-				.get(&res)
-				.copied();
-			if let Some(occurrence) = source_occurrence
-				&& source_class != target_class
-				&& expr.ty().is_subtype_of(db, ty)
-			{
-				self.project_class_identity(expr, occurrence, source_class, target_class, origin)
-			} else if source_class == target_class {
+			if source_class == target_class {
 				// A same-class label mismatch: a class-labeled
 				// reference where the enum lowering is expected.
 				// RELABEL to the potential-enum form of the
@@ -81,21 +69,13 @@ impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
 					.annotations_mut()
 					.extend(expr.annotations().iter().cloned());
 				relabeled
+			} else if expr.ty().is_subtype_of(db, ty) {
+				// The typer gave the reference the type of a superclass
+				let from = expr.ty();
+				self.upcast(expr, from, ty)
 			} else {
-				// Cross-class coercion of a bare reference with no
-				// top-level occurrence to project through. Reaching this
-				// requires an *upcast reference* (`var Sub: r` read
-				// where `var Sup` is expected) whose identity would need
-				// an ordinal correction between the two potential
-				// universes — which only `project_class_identity` can
-				// supply, and it needs an occurrence. No such shape
-				// exists today: upcast projection of a root goes through
-				// `collect_expression_as`, and bare references are
-				// same-class (handled above). Kept as a loud panic so a
-				// future cross-class reference surfaces here rather than
-				// silently emitting a mis-mapped identity.
 				unreachable!(
-					"class-typed identifier coercion: {:?} at {:?} expected {} but lowered as {}; source {:?} target {:?} top-level occurrence present: {}",
+					"class-typed identifier coercion: {:?} at {:?} expected {} but lowered as {}; source {:?} target {:?}",
 					res,
 					NodeRef::from(EntityRef::new(
 						self.parent.db,
@@ -107,7 +87,6 @@ impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
 					expr.ty().pretty_print(db),
 					source_class.identifier(db),
 					target_class.identifier(db),
-					source_occurrence.is_some(),
 				)
 			}
 		} else if let Some(fixed) = self.fix_for_output(&expr, ty, origin) {

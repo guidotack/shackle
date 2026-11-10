@@ -727,6 +727,11 @@ fn object_thir_lowering_superclass_var_field_access_snapshot() {
 	check_snapshot("superclass_var_field_access");
 }
 
+#[test]
+fn object_thir_lowering_subclass_as_superclass_snapshot() {
+	check_snapshot("subclass_as_superclass");
+}
+
 // The fixtures below came from the objects branch's `object_semantic_tests`
 // layer, which has not been ported: those tests solved the model with MiniZinc
 // and asserted the solution. A lowering snapshot cannot check a solution, but

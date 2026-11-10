@@ -1,16 +1,12 @@
-//! Class-identity projection for expressions.
+//! Class-typed values in lowered expressions.
 //!
-//! A class-typed value denotes an identity in some class's potential universe.
-//! When a value flows into a position expecting a different class — a `Sub`-typed
-//! root used where a `Super` is expected, or a reference read at a non-root
-//! position — its ordinal must be projected into the expected universe. These
-//! helpers perform that projection and the postcondition checks that a lowered
-//! expression's type still matches what the typechecker inferred.
+//! A class-typed value denotes an identity in its class's potential universe,
+//! the `<C>_potential` enum. These helpers relabel class types to those enums
+//! and check that a lowered expression's type still matches what the
+//! typechecker inferred. Converting an object of a subclass to its superclass
+//! is in `upcast.rs`.
 
-use shackle_hir::{
-	class_analysis::{OccurrenceId, class_pattern_for},
-	ids::PatternRef,
-};
+use shackle_hir::class_analysis::class_pattern_for;
 use shackle_ty::{Ty, TyData};
 
 use crate::{
@@ -230,118 +226,6 @@ impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
 		}
 	}
 
-	pub(super) fn project_class_identity(
-		&mut self,
-		expr: Expression<'db>,
-		source_occurrence: OccurrenceId,
-		source_class: PatternRef<'db>,
-		target_class: PatternRef<'db>,
-		origin: impl Into<Origin<'db>>,
-	) -> Expression<'db> {
-		let origin: Origin = origin.into();
-		let source_contribution = self
-			.parent
-			.occurrence_contribution(source_occurrence, source_class);
-		let target_contribution = self
-			.parent
-			.occurrence_contribution(source_occurrence, target_class);
-		let target_member = EnumMemberId::new(
-			self.parent.objects.class_map[&target_class].class_enum,
-			target_contribution.constructor_index as u32,
-		);
-		let source_constructor_index = source_contribution.constructor_index;
-		let global_ordinal = alloc_expression(
-			LookupCall {
-				function: self.parent.ids.functions.enum2int.into(),
-				arguments: vec![expr],
-			},
-			self,
-			origin,
-		);
-		let local_ordinal = if source_constructor_index == 0 {
-			global_ordinal
-		} else {
-			let previous_end = self.parent.objects.contribution_end_map
-				[&(source_class, source_constructor_index - 1)];
-			let previous_end_expr =
-				alloc_expression(ResolvedIdentifier::Declaration(previous_end), self, origin);
-			let zero_based = alloc_expression(
-				LookupCall {
-					function: self.parent.ids.functions.minus.into(),
-					arguments: vec![global_ordinal, previous_end_expr],
-				},
-				self,
-				origin,
-			);
-			alloc_expression(
-				LookupCall {
-					function: self.parent.ids.functions.plus.into(),
-					arguments: vec![
-						alloc_expression(IntegerLiteral(1), self, origin),
-						zero_based,
-					],
-				},
-				self,
-				origin,
-			)
-		};
-		alloc_expression(
-			Call {
-				function: Callable::EnumConstructor(target_member),
-				arguments: vec![local_ordinal],
-			},
-			self,
-			origin,
-		)
-	}
-
-	/// The join constructor index for projecting a NON-root reference of
-	/// `source_class` into `join_class`'s identity universe, or `None` when
-	/// no closed-form projection exists (kept a clean type error).
-	///
-	/// A root operand carries a static occurrence, so `project_class_identity`
-	/// can correct its ordinal per contribution. A *reference* (`var Sub: r`)
-	/// holds a runtime `Sub_potential` value, so the projection must be a total
-	/// map over the whole potential enum. That map is a closed form ONLY when
-	/// `source_class` has a SINGLE contribution across all occurrences: then
-	/// `Sub_potential` has one constructor, `enum2int(r)` is already the
-	/// contribution-local 1-based ordinal (`contribution_local_ordinal` is the
-	/// identity for constructor 0), and the join image is
-	/// `Join_occ_ct(enum2int(r))` where `ct` is the constructor the SAME
-	/// occurrence contributes to the join (its superclass image, whose slot i
-	/// coincides with the direct slot i — the 1:1 mapping
-	/// `superclass_projection_contribution_expr` relies on). A
-	/// multi-contribution source would need a piecewise per-constructor offset
-	/// map; that stays a clean type error.
-	pub(super) fn reference_projection_join_constructor(
-		&self,
-		source_class: PatternRef<'db>,
-		join_class: PatternRef<'db>,
-	) -> Option<usize> {
-		let mut single: Option<OccurrenceId> = None;
-		for occ_contribs in self.parent.objects.plan.contributions_in_occurrence_order() {
-			for contribution in occ_contribs
-				.iter()
-				.filter(|c| c.target_class == source_class)
-			{
-				// More than one contribution to the source class → its potential
-				// enum has multiple constructors, so no single-constructor closed
-				// form. Also require constructor 0 (a lone contribution always is),
-				// so `enum2int` is the contribution-local ordinal.
-				if single.replace(contribution.occurrence).is_some()
-					|| contribution.constructor_index != 0
-				{
-					return None;
-				}
-			}
-		}
-		let occurrence = single?;
-		self.parent.objects.plan.contributions_by_occurrence[&occurrence]
-			.iter()
-			.find(|c| c.target_class == join_class)
-			.map(|c| c.constructor_index)
-	}
-
 	/// Relabel a class-labeled call operand to its potential-enum lowering.
 	///
 	/// Function resolution and type specialisation instantiate generic
@@ -368,39 +252,5 @@ impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
 			.annotations_mut()
 			.extend(expr.annotations().iter().cloned());
 		relabeled
-	}
-
-	/// Project a NON-root reference `expr : var Sub` into `join_class`'s
-	/// identity universe as `Join_occ_ct(enum2int(expr))`. The caller resolved
-	/// `join_constructor` via `reference_projection_join_constructor`, which
-	/// guarantees the single-contribution closed form.
-	pub(super) fn project_reference_identity(
-		&mut self,
-		expr: Expression<'db>,
-		join_class: PatternRef<'db>,
-		join_constructor: usize,
-		origin: impl Into<Origin<'db>>,
-	) -> Expression<'db> {
-		let origin: Origin = origin.into();
-		let global_ordinal = alloc_expression(
-			LookupCall {
-				function: self.parent.ids.functions.enum2int.into(),
-				arguments: vec![expr],
-			},
-			self,
-			origin,
-		);
-		let join_member = EnumMemberId::new(
-			self.parent.objects.class_map[&join_class].class_enum,
-			join_constructor as u32,
-		);
-		alloc_expression(
-			Call {
-				function: Callable::EnumConstructor(join_member),
-				arguments: vec![global_ordinal],
-			},
-			self,
-			origin,
-		)
 	}
 }

@@ -7,7 +7,7 @@
 use shackle_hir::{
 	Item, TypeResult,
 	class_analysis::class_pattern_for,
-	ids::{EntityRef, ExpressionRef, NodeRef, PatternRef},
+	ids::{ExpressionRef, NodeRef, PatternRef},
 };
 use shackle_ty::{Ty, TyData};
 use shackle_utils::maybe_grow_stack;
@@ -25,6 +25,7 @@ mod identifier;
 mod if_then_else;
 mod pattern;
 mod record_access;
+mod upcast;
 
 pub(in crate::lower) struct ExpressionCollector<'db, 'a, 'b, 'c> {
 	pub(in crate::lower) parent: &'a mut ItemCollector<'db>,
@@ -93,9 +94,10 @@ impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
 		maybe_grow_stack(|| self.collect_expression_inner(idx))
 	}
 
-	/// Collect an expression, projecting a class-typed identifier into the
-	/// expected class's identity universe when the two differ (a `Sub`-typed
-	/// root used where a `Super` is expected).
+	/// Collect the definition of a declaration of type `expected_ty`. Objects
+	/// of a subclass in it become objects of the declared superclass (see
+	/// `upcast`), and a value of the declared class takes the declaration's
+	/// potential-enum type.
 	pub(in crate::lower) fn collect_expression_as(
 		&mut self,
 		idx: shackle_hir::ExpressionId<'db>,
@@ -105,53 +107,25 @@ impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
 		if expr.ty() == expected_ty {
 			return expr;
 		}
-		let Some(target_class) = expected_ty.class_type(self.parent.db) else {
-			return expr;
-		};
-		let target_class =
-			class_pattern_for(self.parent.db, target_class).expect("class item for class type");
-		let target_enum =
-			self.parent.model[self.parent.objects.class_map[&target_class].class_enum].enum_type();
-		if expr.ty().enum_ty(self.parent.db) == Some(target_enum) {
-			let coerce_ty = self
-				.parent
-				.substitute_class_with_potential_enum(expected_ty);
-			let mut coerced = Expression::new_unchecked(coerce_ty, (*expr).clone(), expr.origin());
-			coerced
-				.annotations_mut()
-				.extend(expr.annotations().iter().cloned());
-			return coerced;
+		if let Some(target_class) = expected_ty.class_type(self.parent.db) {
+			let target_class =
+				class_pattern_for(self.parent.db, target_class).expect("class item for class type");
+			let target_enum = self.parent.model
+				[self.parent.objects.class_map[&target_class].class_enum]
+				.enum_type();
+			if expr.ty().enum_ty(self.parent.db) == Some(target_enum) {
+				let coerce_ty = self
+					.parent
+					.substitute_class_with_potential_enum(expected_ty);
+				let mut coerced =
+					Expression::new_unchecked(coerce_ty, (*expr).clone(), expr.origin());
+				coerced
+					.annotations_mut()
+					.extend(expr.annotations().iter().cloned());
+				return coerced;
+			}
 		}
-		// The lowered expression carries the potential-enum label, so class
-		// subtyping is judged on the HIR types.
-		let hir_ty = self.types[idx];
-		if !hir_ty.is_subtype_of(self.parent.db, expected_ty) {
-			return expr;
-		}
-		let Some(source_class) = hir_ty.class_type(self.parent.db) else {
-			return expr;
-		};
-		let shackle_hir::Expression::Identifier(_) = &self.data[idx] else {
-			return expr;
-		};
-		let res = self.types.name_resolution(idx).unwrap();
-		let Some(source_occurrence) = self.parent.objects.plan.top_level_occurrences.get(&res)
-		else {
-			return expr;
-		};
-		let source_class =
-			class_pattern_for(self.parent.db, source_class).expect("class item for class type");
-		self.project_class_identity(
-			expr,
-			*source_occurrence,
-			source_class,
-			target_class,
-			EntityRef::new(
-				self.parent.db,
-				self.item,
-				shackle_hir::ids::EntityId::from(idx),
-			),
-		)
+		self.upcast(expr, self.types[idx], expected_ty)
 	}
 
 	fn collect_expression_inner(&mut self, idx: shackle_hir::ExpressionId<'db>) -> Expression<'db> {
@@ -162,14 +136,14 @@ impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
 			shackle_hir::Expression::Absent => alloc_expression(Absent, self, origin),
 			shackle_hir::Expression::ArrayAccess(aa) => self.collect_array_access(aa, origin),
 			shackle_hir::Expression::ArrayComprehension(c) => {
-				self.collect_array_comprehension(c, origin)
+				self.collect_array_comprehension(c, ty, origin)
 			}
-			shackle_hir::Expression::ArrayLiteral(al) => self.collect_array_literal(al, origin),
+			shackle_hir::Expression::ArrayLiteral(al) => self.collect_array_literal(al, ty, origin),
 			shackle_hir::Expression::ArrayLiteral2D(al) => {
-				self.collect_array_literal_2d(al, origin)
+				self.collect_array_literal_2d(al, ty, origin)
 			}
 			shackle_hir::Expression::IndexedArrayLiteral(al) => {
-				self.collect_indexed_array_literal(al, origin)
+				self.collect_indexed_array_literal(al, ty, origin)
 			}
 			shackle_hir::Expression::BooleanLiteral(b) => alloc_expression(*b, self, origin),
 			shackle_hir::Expression::Call(c) => self.collect_call_expression(c, idx),
@@ -201,7 +175,7 @@ impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
 											false,
 											case.pattern,
 										);
-										let result = self.collect_expression(case.value);
+										let result = self.collect_expression_upcast(case.value, ty);
 										if decls.is_empty() {
 											CaseBranch::new(pattern, result)
 										} else {
@@ -317,7 +291,7 @@ impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
 								.collect::<Vec<_>>(),
 						})
 						.collect(),
-					in_expression: Box::new(self.collect_expression(l.in_expression)),
+					in_expression: Box::new(self.collect_expression_upcast(l.in_expression, ty)),
 				},
 				self,
 				origin,
@@ -328,10 +302,14 @@ impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
 					rl.fields
 						.iter()
 						.map(|(i, v)| {
-							(
-								self.data[*i].identifier().unwrap(),
-								self.collect_expression(*v),
-							)
+							let name = self.data[*i].identifier().unwrap();
+							let field = ty.record_fields(db).and_then(|fields| {
+								fields
+									.iter()
+									.find(|(field, _)| *field == name.0)
+									.map(|(_, field_ty)| *field_ty)
+							});
+							(name, self.collect_member(*v, field))
 						})
 						.collect(),
 				),
@@ -339,13 +317,16 @@ impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
 				origin,
 			),
 			shackle_hir::Expression::SetComprehension(c) => {
-				self.collect_set_comprehension(c, origin)
+				self.collect_set_comprehension(c, ty, origin)
 			}
 			shackle_hir::Expression::SetLiteral(sl) => alloc_expression(
 				SetLiteral(
 					sl.members
 						.iter()
-						.map(|m| self.collect_expression(*m))
+						.map(|m| {
+							let element = self.set_element_ty(ty);
+							self.collect_member(*m, element)
+						})
 						.collect(),
 				),
 				self,
@@ -408,7 +389,11 @@ impl<'db, 'a, 'b, 'c> ExpressionCollector<'db, 'a, 'b, 'c> {
 				TupleLiteral(
 					tl.fields
 						.iter()
-						.map(|f| self.collect_expression(*f))
+						.enumerate()
+						.map(|(i, f)| {
+							let field = ty.fields(db).and_then(|fields| fields.get(i).copied());
+							self.collect_member(*f, field)
+						})
 						.collect(),
 				),
 				self,

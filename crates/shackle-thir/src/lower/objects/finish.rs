@@ -460,6 +460,7 @@ impl<'db> ItemCollector<'db> {
 		// Every class now has its full potential enum, so its ids can be
 		// generated constructor by constructor.
 		self.define_class_ids();
+		self.define_upcast_maps();
 		// Gated forall-drop: a computed attribute's class-body forall
 		// `forall(this in <C>)(this.<attr> = <rhs>)` is redundant once EVERY
 		// contribution to <C> alias-defines its defined fields — the engine's
