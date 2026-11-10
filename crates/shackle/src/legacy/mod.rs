@@ -860,6 +860,26 @@ impl Value {
 				};
 				EnumValue::from_enum_and_pos(e.clone(), pos as usize).into()
 			}
+			Type::Set(_, element) if erased && matches!(**element, Type::Enum(_, _)) => {
+				let Type::Enum(_, e) = &**element else {
+					unreachable!()
+				};
+				let Value::Set(Set::Int(ranges)) = v else {
+					panic!("expected integer set")
+				};
+				Value::Set(
+					ranges
+						.into_iter()
+						.map(|r| {
+							EnumRangeInclusive::from_enum_and_positions(
+								e.clone(),
+								*r.start() as usize,
+								*r.end() as usize,
+							)
+						})
+						.collect(),
+				)
+			}
 			Type::Array {
 				opt: _,
 				dim,

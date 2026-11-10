@@ -326,6 +326,12 @@ fn solve_include_globals() {
 }
 
 #[test]
+fn solve_set_of_enum_output() {
+	check_solve("set_of_enum_output", false, false);
+	check_solve("set_of_enum_output", false, true);
+}
+
+#[test]
 fn solve_target_data_output() {
 	let name = "target_data_output";
 	check_solve_with_data(name, &[fixture(name, "dzn")], false, false);
