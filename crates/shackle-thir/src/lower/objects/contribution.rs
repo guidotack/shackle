@@ -69,9 +69,9 @@ impl<'db> ItemCollector<'db> {
 	/// `(class, contribution_index)`. Enum-indexed storage (nested
 	/// per-contribution arrays) uses the slot index directly — it already IS
 	/// the `<C>_occ_k(...)` identity. Int-indexed storage (top-level root
-	/// contributions) is positioned by constructor-local ordinals, so wrap the
-	/// index in the contribution's enum constructor — the same
-	/// `EnumMemberId::new(class_enum, contribution_index)` mapping the
+	/// contributions) is positioned from 1, so apply the contribution's enum
+	/// constructor to the slot's argument (`slot_constructor_argument`) — the
+	/// same `EnumMemberId::new(class_enum, contribution_index)` mapping the
 	/// per-parent slice arrays use.
 	pub(in crate::lower) fn contribution_slot_identity(
 		&mut self,
@@ -86,13 +86,15 @@ impl<'db> ItemCollector<'db> {
 				self.objects.class_map[&class].class_enum,
 				contribution_index as u32,
 			);
+			let argument =
+				self.slot_constructor_argument(item, class, contribution_index, index_expr);
 			Expression::new(
 				self.db,
 				&self.model,
 				item,
 				Call {
 					function: Callable::EnumConstructor(enum_member),
-					arguments: vec![index_expr],
+					arguments: vec![argument],
 				},
 			)
 		} else {
@@ -101,7 +103,8 @@ impl<'db> ItemCollector<'db> {
 	}
 
 	/// The constructor-LOCAL ordinal of contribution storage slot `p` for
-	/// `(class, contribution_index)`. Int-indexed storage is positioned by
+	/// `(class, contribution_index)`: its position in the contribution's
+	/// block, from 1. Int-indexed storage is positioned by
 	/// local ordinals already. Enum-indexed storage erases to the class
 	/// enum's global position, corrected back to constructor-local via the
 	/// previous contribution's end offset — the same arithmetic as
@@ -161,6 +164,89 @@ impl<'db> ItemCollector<'db> {
 			LookupCall {
 				function: self.ids.functions.plus.into(),
 				arguments: vec![one, zero_based],
+			},
+		)
+	}
+
+	/// The argument of the enum constructor of `(class, contribution_index)`
+	/// for contribution storage slot `p`. It differs from the slot's
+	/// constructor-local ordinal (`contribution_local_ordinal`) only for a
+	/// top-level root whose block continues the numbering of the class's
+	/// previous roots (`slot_constructor_argument`).
+	pub(in crate::lower) fn contribution_slot_argument(
+		&mut self,
+		item: Item<'db>,
+		class: PatternRef<'db>,
+		contribution_index: usize,
+		index_ty: Ty<'db>,
+		index_expr: Expression<'db>,
+	) -> Expression<'db> {
+		if index_ty == Ty::par_int(self.db) {
+			self.slot_constructor_argument(item, class, contribution_index, index_expr)
+		} else {
+			self.contribution_local_ordinal(item, class, contribution_index, index_ty, index_expr)
+		}
+	}
+
+	/// The argument of the enum constructor for slot `p` of the int-indexed
+	/// storage of `(class, contribution_index)`, a top-level root's: the
+	/// storage is positioned from 1, but the constructor's domain continues
+	/// the numbering of the class's previous roots (`<start>..<end> - 1`),
+	/// so slot `p` is `<start> + p - 1`
+	fn slot_constructor_argument(
+		&mut self,
+		item: Item<'db>,
+		class: PatternRef<'db>,
+		contribution_index: usize,
+		index_expr: Expression<'db>,
+	) -> Expression<'db> {
+		let domain = self
+			.class_enum_constructor_domain(
+				self.objects.class_map[&class].class_enum,
+				contribution_index,
+			)
+			.expect("object constructor has a bounded parameter domain");
+		let start = match &*domain {
+			ExpressionData::SetLiteral(members) if !members.is_empty() => members[0].clone(),
+			ExpressionData::Call(Call {
+				function: Callable::Function(f),
+				arguments,
+			}) if self.model[*f].name() == self.ids.functions.dot_dot => arguments[0].clone(),
+			_ => Expression::new(
+				self.db,
+				&self.model,
+				item,
+				LookupCall {
+					function: self.ids.functions.min.into(),
+					arguments: vec![domain],
+				},
+			),
+		};
+		let offset = match &*start {
+			ExpressionData::IntegerLiteral(IntegerLiteral(1)) => return index_expr,
+			ExpressionData::IntegerLiteral(IntegerLiteral(start)) => {
+				Expression::new(self.db, &self.model, item, IntegerLiteral(start - 1))
+			}
+			_ => {
+				let one = Expression::new(self.db, &self.model, item, IntegerLiteral(1));
+				Expression::new(
+					self.db,
+					&self.model,
+					item,
+					LookupCall {
+						function: self.ids.functions.minus.into(),
+						arguments: vec![start, one],
+					},
+				)
+			}
+		};
+		Expression::new(
+			self.db,
+			&self.model,
+			item,
+			LookupCall {
+				function: self.ids.functions.plus.into(),
+				arguments: vec![index_expr, offset],
 			},
 		)
 	}

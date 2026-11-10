@@ -685,6 +685,12 @@ fn solve_object_three_level_inheritance() {
 }
 
 #[test]
+fn solve_object_superclass_var_set_chained_roots() {
+	check_solve("objects/48_superclass_var_set_chained_roots", false, false);
+	check_solve("objects/48_superclass_var_set_chained_roots", false, true);
+}
+
+#[test]
 fn solve_object_subclass_set_as_superclass() {
 	check_solve("objects/46_subclass_set_as_superclass", false, false);
 	check_solve("objects/46_subclass_set_as_superclass", false, true);

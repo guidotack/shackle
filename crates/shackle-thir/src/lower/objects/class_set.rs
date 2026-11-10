@@ -673,12 +673,11 @@ impl<'db> ItemCollector<'db> {
 
 	/// The per-contribution comprehension for a superclass projection: the
 	/// identity image of the (already-derived) direct class's actual set,
-	/// `[if <D-identity(i)> in D then {<Super>_occ_j(<local i>)} else {}
-	/// endif | i in index_set(<D storage>)]`. The direct class's slot i and
-	/// the superclass's constructor-local ordinal coincide (the occurrence
-	/// contributes the same slots to every projection target 1:1, the
-	/// `project_class_identity` arithmetic). The guard is skipped for
-	/// non-var-actual direct classes (all slots realised).
+	/// `[if <D-identity(i)> in D then {<Super>_occ_j(<argument of i>)} else
+	/// {} endif | i in index_set(<D storage>)]`. The occurrence contributes
+	/// the same slots, over the same constructor domain, to every projection
+	/// target, so slot i has the same constructor argument in both. The guard
+	/// is skipped for non-var-actual direct classes (all slots realised).
 	pub(in crate::lower) fn superclass_projection_contribution_expr(
 		&mut self,
 		item: Item<'db>,
@@ -763,7 +762,9 @@ impl<'db> ItemCollector<'db> {
 			.add_declaration(DeclarationItem::new(p_decl, item));
 		let p_expr = Expression::new(self.db, &self.model, item, p_idx);
 
-		let ordinal = self.contribution_local_ordinal(
+		// The superclass's constructor has the same domain as the direct
+		// class's, so the slot's identity in it takes the same argument
+		let ordinal = self.contribution_slot_argument(
 			item,
 			direct_class,
 			direct_constructor_index,
