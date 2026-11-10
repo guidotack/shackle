@@ -433,6 +433,24 @@ fn test_type_errors() {
 	);
 }
 
+/// An enum constructor over the empty set literal has no argument type: with
+/// `{}` of ints `A(3)` would be undefined, of another enum a type error
+#[test]
+fn test_enum_constructor_over_empty_set() {
+	let mut tester = TypeTester::new();
+	tester.check_error_message(
+		"enum E = A({});",
+		"Type cannot be determined",
+		"can't be determined from an empty set",
+	);
+	tester.check_error_message(
+		"enum F = {p}; enum E = A({}) ++ B(F);",
+		"Type cannot be determined",
+		"can't be determined from an empty set",
+	);
+	tester.check_error("set of int: S = {}; enum E = A(S);", expect!(""));
+}
+
 #[test]
 fn test_class_typecheck() {
 	let mut tester = TypeTester::new();

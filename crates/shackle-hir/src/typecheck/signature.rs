@@ -774,7 +774,7 @@ impl<'db> SignatureTypeContext<'db> {
 	) {
 		let get_param_types = |ctx: &mut SignatureTypeContext<'db>,
 		                       parameters: &[Parameter<'db>]| {
-			let param_types = {
+			let mut param_types = {
 				let mut typer = Typer::new(db, ctx, item, data);
 				parameters
 					.iter()
@@ -791,11 +791,29 @@ impl<'db> SignatureTypeContext<'db> {
 			};
 
 			let mut had_error = false;
-			for (p, t) in parameters.iter().zip(param_types.iter()) {
+			for (p, t) in parameters.iter().zip(param_types.iter_mut()) {
 				if t.contains_error(db) {
 					had_error = true;
 				}
-				if !t.known_par(db) || !t.known_enumerable(db) {
+				if t.contains_bottom(db) {
+					// An empty set literal (`A({})`) gives no element type, so
+					// whether `A(3)` is undefined or a type error can't be
+					// decided
+					let (src, span) = TypeRef::new(db, item, p.declared_type).source_span(db);
+					ctx.add_diagnostic(
+						db,
+						item,
+						TypeInferenceFailure {
+							src,
+							span,
+							msg: "The type of the constructor's argument can't be determined \
+							      from an empty set; give the set a type"
+								.to_owned(),
+						},
+					);
+					*t = TypeRegistry::lookup(db).error;
+					had_error = true;
+				} else if !t.known_par(db) || !t.known_enumerable(db) {
 					let (src, span) = TypeRef::new(db, item, p.declared_type).source_span(db);
 					ctx.add_diagnostic(
 						db,
