@@ -319,7 +319,7 @@ impl Index {
 		}
 	}
 
-	fn iter(&self) -> IndexIter {
+	pub(crate) fn iter(&self) -> IndexIter {
 		match self {
 			Index::Integer(x) => IndexIter::Integer(x.clone()),
 			Index::Enum(e) => IndexIter::Enum(e.clone()),
@@ -337,7 +337,7 @@ impl Display for Index {
 }
 
 #[derive(Debug, Clone)]
-enum IndexIter {
+pub(crate) enum IndexIter {
 	Integer(RangeInclusive<i64>),
 	Enum(EnumRangeInclusive),
 }

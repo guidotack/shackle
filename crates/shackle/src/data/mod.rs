@@ -6,7 +6,7 @@ pub(crate) mod serde;
 use std::sync::Arc;
 
 use itertools::Itertools;
-use shackle_diagnostics::InternalError;
+use shackle_diagnostics::{InternalError, InvalidArrayLiteral, SourceFile, SourceSpan};
 
 use crate::{
 	Error, OptType, Result, Type,
@@ -39,7 +39,11 @@ pub(crate) enum ParserVal {
 	Ann(String, Vec<ParserVal>),
 	/// An array of values
 	SimpleArray(Vec<(ParserVal, ParserVal)>, Vec<ParserVal>),
-	IndexedArray(usize, Vec<ParserVal>),
+	/// An array literal with the indices of every element, and where it was written
+	IndexedArray(
+		Vec<(Vec<ParserVal>, ParserVal)>,
+		Box<(SourceFile, SourceSpan)>,
+	),
 	/// A set of values
 	SetList(Vec<ParserVal>),
 	SetRangeList(Vec<(ParserVal, ParserVal)>),
@@ -176,7 +180,83 @@ impl ParserVal {
 					.collect::<Result<Vec<_>, _>>()?;
 				Ok(Array::new(indices, elements).into())
 			}
-			ParserVal::IndexedArray(_, _) => todo!(),
+			ParserVal::IndexedArray(members, location) => {
+				let Type::Array {
+					opt: _,
+					dim,
+					element,
+				} = ty
+				else {
+					unreachable!()
+				};
+				let invalid = |msg: String| -> Error {
+					let (src, span) = *location.clone();
+					InvalidArrayLiteral { src, msg, span }.into()
+				};
+				let members = members
+					.into_iter()
+					.map(|(idxs, el)| {
+						let idxs = idxs
+							.into_iter()
+							.zip_eq(dim.iter())
+							.map(|(idx, ty)| idx.resolve_value(ty))
+							.collect::<Result<Vec<_>>>()?;
+						Ok((idxs, el.resolve_value(element)?))
+					})
+					.collect::<Result<Vec<_>>>()?;
+				// As in MiniZinc, the index set of each dimension runs from its
+				// smallest to its largest index, and each position needs exactly
+				// one element, in any order
+				let indices = (0..dim.len())
+					.map(|d| {
+						let (min, max) = members
+							.iter()
+							.map(|(idxs, _)| &idxs[d])
+							.minmax_by_key(|idx| index_position(idx))
+							.into_option()
+							.expect("an indexed array literal has members");
+						match (min, max) {
+							(Value::Integer(a), Value::Integer(b)) => Index::Integer(*a..=*b),
+							(Value::Enum(a), Value::Enum(b)) => {
+								Index::Enum(EnumRangeInclusive::new(a.clone(), b.clone()))
+							}
+							_ => unreachable!("invalid array index"),
+						}
+					})
+					.collect::<Vec<_>>();
+				let mut elements = vec![None; indices.iter().map(|i| i.len()).product()];
+				for (idxs, el) in members {
+					let pos = idxs.iter().zip(&indices).fold(0, |pos, (idx, index)| {
+						pos * index.len()
+							+ (index_position(idx) - index_position(&index.start())) as usize
+					});
+					if elements[pos].replace(el).is_some() {
+						return Err(invalid(format!(
+							"The index {} is given more than once",
+							show_index(&idxs)
+						)));
+					}
+				}
+				if let Some(pos) = elements.iter().position(Option::is_none) {
+					// Row-major: the last dimension varies fastest
+					let mut rest = pos;
+					let mut idxs = indices
+						.iter()
+						.rev()
+						.map(|index| {
+							let idx = index.iter().nth(rest % index.len()).unwrap();
+							rest /= index.len();
+							idx
+						})
+						.collect::<Vec<_>>();
+					idxs.reverse();
+					return Err(invalid(format!(
+						"No element is given for the index {}",
+						show_index(&idxs)
+					)));
+				}
+				Ok(Array::new(indices, elements.into_iter().flatten().collect()).into())
+			}
 			ParserVal::SetList(li) => {
 				let Type::Set(_, ty) = ty else { unreachable!() };
 				let members = li
@@ -292,5 +372,23 @@ impl ParserVal {
 				Ok(Value::Record(rec))
 			}
 		}
+	}
+}
+
+/// The position of an array index among the indices of its type
+fn index_position(idx: &Value) -> i64 {
+	match idx {
+		Value::Integer(i) => *i,
+		Value::Enum(e) => e.int_val() as i64,
+		_ => unreachable!("invalid array index"),
+	}
+}
+
+/// Show the indices of an array element as they are written in an array literal
+fn show_index(idxs: &[Value]) -> String {
+	if let [idx] = idxs {
+		idx.to_string()
+	} else {
+		format!("({})", idxs.iter().format(", "))
 	}
 }

@@ -216,8 +216,7 @@ pub(crate) fn collect_dzn_value(
 					// Empty array literal
 					Ok(ParserVal::SimpleArray(Vec::new(), Vec::new()))
 				} else if members[0].indices().is_none()
-					|| members.len() <= 1
-					|| members[1].indices().is_none()
+					|| (dim.len() == 1 && (members.len() <= 1 || members[1].indices().is_none()))
 				{
 					// Array literal without any indices or a single index
 					if dim.len() != 1 {
@@ -259,15 +258,16 @@ pub(crate) fn collect_dzn_value(
 					Ok(ParserVal::SimpleArray(vec![(start, end)], elems))
 				} else {
 					// Array literal with indices for all element
-					let mut elems = Vec::with_capacity(members.len() * (dim.len() + 1));
+					let mut elems = Vec::with_capacity(members.len());
 					for m in members {
+						let mut idxs = Vec::with_capacity(dim.len());
 						match m.indices() {
 							Some(indices) => {
 								match indices {
 									Expression::TupleLiteral(v) => {
 										let mut i = 0;
 										for (idx, idx_ty) in v.members().zip_eq(dim.iter()) {
-											elems.push(collect_dzn_value(file, &idx, idx_ty)?);
+											idxs.push(collect_dzn_value(file, &idx, idx_ty)?);
 											i += 1;
 										}
 										if i != dim.len() {
@@ -288,7 +288,7 @@ pub(crate) fn collect_dzn_value(
 											}
 											.into());
 										}
-										elems.push(collect_dzn_value(file,  &v, &dim[0])?);
+										idxs.push(collect_dzn_value(file,  &v, &dim[0])?);
 									},
 									_ => unreachable!(),
 								}
@@ -300,10 +300,12 @@ pub(crate) fn collect_dzn_value(
 							}
 							.into()),
 						}
-						elems.push(collect_dzn_value(file, &m.value(), element)?);
+						elems.push((idxs, collect_dzn_value(file, &m.value(), element)?));
 					}
-					debug_assert!(elems.len() % (dim.len() + 1) == 0);
-					Ok(ParserVal::IndexedArray(dim.len(), elems))
+					Ok(ParserVal::IndexedArray(
+						elems,
+						Box::new((file.clone(), al.cst_node().as_ref().byte_range().into())),
+					))
 				}
 			}
 			_ => type_err("an array literal"),
@@ -389,15 +391,16 @@ pub(crate) fn collect_dzn_value(
 						col_indices.extend((1..=col_count as i64).map(ParserVal::Integer))
 					};
 
-					let mut indexed_values = Vec::with_capacity(values.len() * 3);
-					for ((row, col), v) in row_indices
+					let indexed_values = row_indices
 						.into_iter()
 						.cartesian_product(col_indices)
 						.zip_eq(values)
-					{
-						indexed_values.extend_from_slice(&[row, col, v])
-					}
-					ParserVal::IndexedArray(2, indexed_values)
+						.map(|((row, col), v)| (vec![row, col], v))
+						.collect();
+					ParserVal::IndexedArray(
+						indexed_values,
+						Box::new((file.clone(), al.cst_node().as_ref().byte_range().into())),
+					)
 				})
 			} else {
 				type_err("a 2d array literal")
@@ -993,6 +996,76 @@ mod tests {
 				element: Type::Integer(OptType::Opt).into(),
 			},
 			&expect!("[<>, <>, 1, <>]"),
+		);
+	}
+
+	#[test]
+	fn test_parse_indexed_array() {
+		let int = || Type::Integer(OptType::NonOpt);
+		let array = |dim: Vec<Type>| Type::Array {
+			opt: OptType::NonOpt,
+			dim: dim.into(),
+			element: int().into(),
+		};
+		let colour = Arc::new(Enum::from_constructors(
+			"Colour".into(),
+			["Red", "Green", "Blue"].map(|c| (c.into(), [].into(), 1)),
+		));
+		let colour = Type::Enum(OptType::NonOpt, colour);
+
+		// The elements are placed by their indices, in any order
+		check_serialization(
+			"[Green: 2, Red: 1, Blue: 3]",
+			&array(vec![colour.clone()]),
+			&expect!("[Red: 1, Green: 2, Blue: 3]"),
+		);
+		check_serialization("[4: 1, 3: 2]", &array(vec![int()]), &expect!("[3: 2, 1]"));
+		check_serialization(
+			"[(2, 1): 3, (1, 1): 1, (1, 2): 2, (2, 2): 4]",
+			&array(vec![int(), int()]),
+			&expect!("[(1, 1): 1, (1, 2): 2, (2, 1): 3, (2, 2): 4]"),
+		);
+		check_serialization(
+			"[(1, 1): 5]",
+			&array(vec![int(), int()]),
+			&expect!("[(1, 1): 5]"),
+		);
+		check_serialization(
+			"[| 2: 1, 2, 3 | 1: 4, 5, 6 |]",
+			&array(vec![int(), int()]),
+			&expect!("[(1, 1): 4, (1, 2): 5, (1, 3): 6, (2, 1): 1, (2, 2): 2, (2, 3): 3]"),
+		);
+		check_serialization(
+			"[| 1: 2: | Green: 3, 4 | Red: 1, 2 |]",
+			&array(vec![colour.clone(), int()]),
+			&expect!("[(Red, 1): 1, (Red, 2): 2, (Green, 1): 3, (Green, 2): 4]"),
+		);
+
+		let check_error = |input: &str, ty: &Type, expected: &str| {
+			let src = SourceFile::unnamed(format!("x = {input};"));
+			let dzn = parse_dzn(&src).expect("unexpected syntax error");
+			let assignments = dzn.items().collect::<Vec<_>>();
+			let err = collect_dzn_value(&src, &assignments[0].definition(), ty)
+				.expect("unexpected type error")
+				.resolve_value(ty)
+				.expect_err("expected a resolve error");
+			let err = format!("{err:?}");
+			assert!(err.contains(expected), "{err}");
+		};
+		check_error(
+			"[Red: 1, Red: 3]",
+			&array(vec![colour.clone()]),
+			"The index Red is given more than once",
+		);
+		check_error(
+			"[Red: 1, Blue: 3]",
+			&array(vec![colour]),
+			"No element is given for the index Green",
+		);
+		check_error(
+			"[(1, 1): 1, (1, 2): 2, (2, 1): 3]",
+			&array(vec![int(), int()]),
+			"No element is given for the index (2, 2)",
 		);
 	}
 
