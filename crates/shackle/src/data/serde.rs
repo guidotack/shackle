@@ -115,7 +115,7 @@ impl<'de> Visitor<'de> for SerdeValueVisitor<'_> {
 				dim,
 				element,
 			} => {
-				let mut sizes = Vec::with_capacity(dim.len());
+				let mut sizes = vec![None; dim.len()];
 				let mut data = Vec::new();
 				let visitor = SerdeArrayVisitor {
 					data: &mut data,
@@ -128,9 +128,9 @@ impl<'de> Visitor<'de> for SerdeValueVisitor<'_> {
 				if data.is_empty() {
 					return Ok(ParserVal::SimpleArray(Vec::new(), Vec::new()));
 				}
-				debug_assert_eq!(dim.len(), sizes.len());
-				let mut indices = Vec::with_capacity(sizes.capacity());
+				let mut indices = Vec::with_capacity(dim.len());
 				for (ty, len) in dim.iter().zip_eq(sizes) {
+					let len = len.expect("a non-empty array has a length in every dimension");
 					match ty {
 						Type::Integer(OptType::NonOpt) => {
 							indices.push((ParserVal::Integer(1), ParserVal::Integer(len)))
@@ -330,7 +330,8 @@ impl<'de> Visitor<'de> for SerdeEnumVisitor {
 
 struct SerdeArrayVisitor<'a> {
 	data: &'a mut Vec<ParserVal>,
-	size: &'a mut Vec<i64>,
+	/// The length of each dimension, once an array of that depth has been read
+	size: &'a mut [Option<i64>],
 	element: &'a Type,
 	dim: u8,
 	depth: u8,
@@ -379,14 +380,14 @@ impl<'de> Visitor<'de> for SerdeArrayVisitor<'_> {
 				i += 1
 			}
 		}
-		if self.size.len() < self.depth as usize {
-			debug_assert_eq!(self.size.len() + 1, self.depth as usize);
-			self.size.push(i);
-		} else if self.size[self.depth as usize - 1] != i {
-			return Err(Error::invalid_length(
-				i as usize,
-				&self.size[self.depth as usize - 1].to_string().as_str(),
-			));
+		// The innermost arrays are read first, so a dimension's length is
+		// recorded by its depth, and every array of that depth must match it
+		match self.size[self.depth as usize - 1] {
+			None => self.size[self.depth as usize - 1] = Some(i),
+			Some(len) if len != i => {
+				return Err(Error::invalid_length(i as usize, &len.to_string().as_str()));
+			}
+			Some(_) => {}
 		}
 		Ok(())
 	}
@@ -1290,6 +1291,46 @@ mod tests {
 			},
 			&expect!("[<>, <>, 1, <>]"),
 		);
+	}
+
+	#[test]
+	fn test_parse_multidimensional_array() {
+		let array = |dims: usize, element: Type| Type::Array {
+			opt: OptType::NonOpt,
+			dim: vec![Type::Integer(OptType::NonOpt); dims].into(),
+			element: element.into(),
+		};
+		check_serialization(
+			"[[1, 2, 3], [4, 5, 6]]",
+			&array(2, Type::Integer(OptType::NonOpt)),
+			&expect!("[(1, 1): 1, (1, 2): 2, (1, 3): 3, (2, 1): 4, (2, 2): 5, (2, 3): 6]"),
+		);
+		check_serialization(
+			"[[[1, null], [null, 2]], [[null, null], [3, null]]]",
+			&array(3, Type::Integer(OptType::Opt)),
+			&expect!(
+				"[(1, 1, 1): 1, (1, 1, 2): <>, (1, 2, 1): <>, (1, 2, 2): 2, (2, 1, 1): <>, (2, 1, 2): <>, (2, 2, 1): 3, (2, 2, 2): <>]"
+			),
+		);
+
+		// Every array of the same depth must have the same length
+		let check_error = |input: &str, expected: &str| {
+			let ty = array(2, Type::Integer(OptType::NonOpt));
+			let input_types = FxHashMap::from_iter([("x".into(), ty)]);
+			let enum_types = FxHashMap::default();
+			let src = SourceFile::unnamed(format!("{{ \"x\": {input} }}"));
+			let err = serde_json::Deserializer::from_str(src.contents())
+				.deserialize_map(SerdeFileVisitor {
+					input_types: &input_types,
+					enum_types: &enum_types,
+				})
+				.map_err(|err| Error::from_serde_json(err, &src))
+				.expect_err("expected a length error");
+			let err = format!("{err:?}");
+			assert!(err.contains(expected), "{err}");
+		};
+		check_error("[[1, 2, 3], [4, 5]]", "invalid length 2, expected 3");
+		check_error("[[1, 2], [4, 5, 6]]", "invalid length 3, expected 2");
 	}
 
 	#[test]

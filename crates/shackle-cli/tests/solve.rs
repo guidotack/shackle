@@ -339,6 +339,13 @@ fn solve_data_indexed_array() {
 	check_solve_with_data(name, &[fixture(name, "dzn")], false, true);
 }
 
+#[test]
+fn solve_multidim_arrays() {
+	let name = "multidim_arrays";
+	check_solve_with_data(name, &[fixture(name, "json")], false, false);
+	check_solve_with_data(name, &[fixture(name, "json")], false, true);
+}
+
 /// Only with the MiniZinc target: the MicroZinc target fails on an enum
 /// defined in data
 #[test]
