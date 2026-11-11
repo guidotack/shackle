@@ -24,6 +24,14 @@ predicate mzn_opt_channel(var opt float: x, set of float: s) =
 	let {
 		any: (bx, dx) = mzn_destruct_opt(x);
 	} in if 0.0 in s then not bx -> dx = 0.0 else not bx <-> dx = 0.0 endif;
+% The value of an absent variable without a domain is the one `<>` has, so that
+% an absent variable has one representation (and equals `<>`)
+predicate mzn_opt_channel(var opt bool: x) =
+	let { any: (bx, dx) = mzn_destruct_opt(x) } in bx \/ not dx;
+predicate mzn_opt_channel(var opt int: x) =
+	let { any: (bx, dx) = mzn_destruct_opt(x) } in bx \/ dx = 0;
+predicate mzn_opt_channel(var opt float: x) =
+	let { any: (bx, dx) = mzn_destruct_opt(x) } in bx \/ dx = 0.0;
 function set of int: mzn_opt_domain(set of int: s) = s union {0};
 function set of float: mzn_opt_domain(set of float: s) = s union {0.0};
 

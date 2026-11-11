@@ -3,6 +3,8 @@
 //! - Replace `<>` with `(false, ⊥)`
 //! - Replace `opt T` with `tuple(bool, T)`
 //! - Make `occurs(x)` return `x.1` and `deopt(x)` return `x.2`
+//! - Fix the value of an absent variable (`mzn_opt_channel`), so that it has one
+//!   representation, the one `<>` erases to
 //!
 //! Does not handle records, so records must be erased into tuples first
 
@@ -10,13 +12,13 @@ use shackle_diagnostics::Result;
 use shackle_hir::{
 	BooleanLiteral, IntegerLiteral, OptType, VarType, constants::IdentifierRegistry,
 };
-use shackle_ty::{Ty, registry::TypeRegistry};
+use shackle_ty::{Ty, TyData, registry::TypeRegistry};
 use shackle_utils::maybe_grow_stack;
 
 use crate::{
-	Constraint, Db, Declaration, Domain, DomainData, DummyValue, Expression, ExpressionData,
-	FunctionId, Item, Let, LetItem, LookupCall, LookupIdentifier, Marker, Model, TupleAccess,
-	TupleLiteral,
+	Constraint, Db, Declaration, DeclarationId, Domain, DomainData, DummyValue, Expression,
+	ExpressionData, FunctionId, Item, Let, LetItem, LookupCall, LookupIdentifier, Marker, Model,
+	TupleAccess, TupleLiteral,
 	source::Origin,
 	traverse::{
 		Folder, ReplacementMap, add_function, fold_domain, fold_expression, fold_function_body,
@@ -28,6 +30,9 @@ struct OptEraser<'db, Dst: Marker, Src: Marker = ()> {
 	replacement_map: ReplacementMap<'db, Dst, Src>,
 	ids: &'db IdentifierRegistry<'db>,
 	tys: &'db TypeRegistry<'db>,
+	/// Whether the declaration being folded is a variable (top-level or in a
+	/// `let`), rather than a parameter or a generator's
+	folding_variable: bool,
 }
 
 impl<'db, Dst: Marker, Src: Marker> Folder<'_, 'db, Dst, Src> for OptEraser<'db, Dst, Src> {
@@ -66,12 +71,24 @@ impl<'db, Dst: Marker, Src: Marker> Folder<'_, 'db, Dst, Src> for OptEraser<'db,
 		fold_function_body(self, db, model, f)
 	}
 
+	fn add_variable_declaration(
+		&mut self,
+		db: &'db dyn Db,
+		model: &Model<'db, Src>,
+		d: DeclarationId<'db, Src>,
+	) {
+		self.folding_variable = true;
+		self.add_declaration(db, model, d);
+		self.folding_variable = false;
+	}
+
 	fn fold_declaration(
 		&mut self,
 		db: &'db dyn Db,
 		model: &Model<'db, Src>,
 		d: &Declaration<'db, Src>,
 	) -> Declaration<'db, Dst> {
+		let variable = std::mem::take(&mut self.folding_variable);
 		let mut declaration =
 			Declaration::new(d.top_level(), self.fold_domain(db, model, d.domain()));
 		if let Some(name) = d.name() {
@@ -114,7 +131,8 @@ impl<'db, Dst: Marker, Src: Marker> Folder<'_, 'db, Dst, Src> for OptEraser<'db,
 			let opt_var = self.create_opt_var(
 				db,
 				e.origin(),
-				Expression::new(db, &self.model, e.origin(), dom_idx),
+				declaration.ty(),
+				Some(Expression::new(db, &self.model, e.origin(), dom_idx)),
 			);
 			declaration.set_definition(Expression::new(
 				db,
@@ -125,6 +143,17 @@ impl<'db, Dst: Marker, Src: Marker> Folder<'_, 'db, Dst, Src> for OptEraser<'db,
 					in_expression: Box::new(opt_var),
 				},
 			));
+		} else if variable
+			&& d.ty().inst(db) == Some(VarType::Var)
+			&& d.ty().opt(db) == Some(OptType::Opt)
+			&& matches!(
+				d.ty().lookup(db),
+				TyData::Boolean(..) | TyData::Integer(..) | TyData::Float(..)
+			) {
+			// A variable without a domain: its value when absent is still fixed
+			let origin = d.domain().origin();
+			let opt_var = self.create_opt_var(db, origin, declaration.ty(), None);
+			declaration.set_definition(opt_var);
 		}
 		declaration
 	}
@@ -305,30 +334,42 @@ impl<'db, Dst: Marker, Src: Marker> Folder<'_, 'db, Dst, Src> for OptEraser<'db,
 }
 
 impl<'db, Src: Marker, Dst: Marker> OptEraser<'db, Dst, Src> {
+	/// The erased form `(occurs, value)` of an optional variable of the erased
+	/// type `ty`, with the domain `domain` if it has one. `mzn_opt_channel`
+	/// fixes `value` when the variable is absent (and, with a domain that
+	/// lacks that value, makes `value` decide whether it occurs).
 	fn create_opt_var(
 		&mut self,
 		db: &'db dyn Db,
 		origin: Origin<'db>,
-		domain: Expression<'db, Dst>,
+		ty: Ty<'db>,
+		domain: Option<Expression<'db, Dst>>,
 	) -> Expression<'db, Dst> {
 		let occurs_decl = Declaration::new(false, Domain::unbounded(db, origin, self.tys.var_bool));
 		let deopt_decl = Declaration::new(
 			false,
-			Domain::bounded(
-				db,
-				origin,
-				VarType::Var,
-				OptType::NonOpt,
-				Expression::new(
+			match &domain {
+				Some(domain) => Domain::bounded(
 					db,
-					&self.model,
 					origin,
-					LookupCall {
-						function: self.ids.functions.mzn_opt_domain.into(),
-						arguments: vec![domain.clone()],
-					},
+					VarType::Var,
+					OptType::NonOpt,
+					Expression::new(
+						db,
+						&self.model,
+						origin,
+						LookupCall {
+							function: self.ids.functions.mzn_opt_domain.into(),
+							arguments: vec![domain.clone()],
+						},
+					),
 				),
-			),
+				None => Domain::unbounded(
+					db,
+					origin,
+					ty.fields(db).expect("an erased optional value is a tuple")[1],
+				),
+			},
 		);
 		let tuple_ty = Ty::tuple(db, [occurs_decl.ty(), deopt_decl.ty()]);
 		let occurs = self.model.add_declaration(Item::new(occurs_decl, origin));
@@ -354,7 +395,10 @@ impl<'db, Src: Marker, Dst: Marker> OptEraser<'db, Dst, Src> {
 				origin,
 				LookupCall {
 					function: self.ids.functions.mzn_opt_channel.into(),
-					arguments: vec![Expression::new(db, &self.model, origin, tuple), domain],
+					arguments: [Expression::new(db, &self.model, origin, tuple)]
+						.into_iter()
+						.chain(domain)
+						.collect(),
 				},
 			),
 		);
@@ -385,6 +429,7 @@ pub fn erase_opt<'db>(db: &'db dyn Db, model: Model<'db>) -> Result<Model<'db>> 
 		replacement_map: ReplacementMap::default(),
 		ids: IdentifierRegistry::lookup(db),
 		tys: TypeRegistry::lookup(db),
+		folding_variable: false,
 	};
 	c.add_model(db, &model);
 	Ok(c.model)
@@ -492,6 +537,53 @@ mod tests {
     } in ((_DECL_12).1, ((_DECL_12).2).1);
     solve satisfy;
 "#]),
+		);
+	}
+
+	/// A variable without a domain still has its value fixed when absent; a
+	/// parameter is not a variable
+	#[test]
+	fn test_option_type_erasure_unbounded_variable() {
+		check_no_stdlib(
+			vec![Transform::TopDownType, Transform::EraseOpt],
+			r#"
+				annotation mzn_opt_bool;
+				predicate mzn_opt_channel(var opt bool: x);
+				predicate mzn_opt_channel(var opt int: x);
+				function var bool: occurs(var opt bool: x);
+				var opt bool: p;
+				var opt int: q;
+				var bool: r = let { var opt bool: z } in occurs(z);
+				function var bool: g(var opt bool: w) = occurs(w);
+            "#,
+			expect![[r#"
+    annotation mzn_opt_bool;
+    predicate mzn_opt_channel(tuple(var bool, var bool): x);
+    predicate mzn_opt_channel(tuple(var bool, var int): x);
+    predicate occurs(tuple(var bool, var bool): x);
+    tuple(var bool, var bool): p = let {
+      var bool: _DECL_4;
+      var bool: _DECL_5;
+      tuple(var bool, var bool): _DECL_6 = (_DECL_4, _DECL_5);
+      constraint mzn_opt_channel(_DECL_6);
+    } in _DECL_6;
+    tuple(var bool, var int): q = let {
+      var bool: _DECL_8;
+      var int: _DECL_9;
+      tuple(var bool, var int): _DECL_10 = (_DECL_8, _DECL_9);
+      constraint mzn_opt_channel(_DECL_10);
+    } in _DECL_10;
+    var bool: r = let {
+      tuple(var bool, var bool): z = let {
+      var bool: _DECL_12;
+      var bool: _DECL_13;
+      tuple(var bool, var bool): _DECL_14 = (_DECL_12, _DECL_13);
+      constraint mzn_opt_channel(_DECL_14);
+    } in _DECL_14;
+    } in occurs(z :: (mzn_opt_bool));
+    function var bool: g(tuple(var bool, var bool): w) = occurs(w :: (mzn_opt_bool));
+    solve satisfy;
+"#]],
 		);
 	}
 

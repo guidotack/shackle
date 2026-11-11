@@ -326,6 +326,12 @@ fn solve_include_globals() {
 }
 
 #[test]
+fn solve_opt_absent_once() {
+	check_solve("opt_absent_once", true, false);
+	check_solve("opt_absent_once", true, true);
+}
+
+#[test]
 fn solve_set_of_enum_output() {
 	check_solve("set_of_enum_output", false, false);
 	check_solve("set_of_enum_output", false, true);
