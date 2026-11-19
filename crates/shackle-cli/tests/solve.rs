@@ -332,6 +332,12 @@ fn solve_opt_absent_once() {
 }
 
 #[test]
+fn solve_show_one_tuple() {
+	check_solve("show_one_tuple", false, false);
+	check_solve("show_one_tuple", false, true);
+}
+
+#[test]
 fn solve_set_of_enum_output() {
 	check_solve("set_of_enum_output", false, false);
 	check_solve("set_of_enum_output", false, true);

@@ -520,7 +520,9 @@ impl<'a, 'db, Dst: Marker> TypeSpecialiser<'a, 'db, Dst> {
 					);
 					fields.push(show);
 				}
-				fields.push(self.expr(db, origin, StringLiteral::new(db, ")")));
+				// A 1-tuple is written with a trailing comma, `(x,)`
+				let close = if fs.len() == 1 { ",)" } else { ")" };
+				fields.push(self.expr(db, origin, StringLiteral::new(db, close)));
 				self.call(
 					db,
 					model,
