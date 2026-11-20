@@ -338,6 +338,11 @@ fn solve_show_one_tuple() {
 }
 
 #[test]
+fn solve_show_set_of_bool() {
+	check_solve("show_set_of_bool", false, false);
+}
+
+#[test]
 fn solve_set_of_enum_output() {
 	check_solve("set_of_enum_output", false, false);
 	check_solve("set_of_enum_output", false, true);

@@ -788,7 +788,7 @@ mod tests {
 					Type::Integer(OptType::NonOpt),
 				]),
 			),
-			&expect!("([1, 2], 3..3 ∪ 4..4, 5)"),
+			&expect!("([1, 2], 3..4, 5)"),
 		);
 		check_serialization(
 			"(1, (2, (4, 5)), 6)",
@@ -899,7 +899,7 @@ mod tests {
 					),
 				]),
 			),
-			&expect!("(a: 1..1 ∪ 2..2, b: (3.5, true), c: [<>])"),
+			&expect!("(a: 1..2, b: (3.5, true), c: [<>])"),
 		);
 
 		check_serialization(

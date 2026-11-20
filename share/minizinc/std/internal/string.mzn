@@ -68,6 +68,17 @@ function string: show(set of float: x) =
 			],
 		)
 	endif;
+% A set of bools can't be iterated over, so it is one of its four values
+function string: show(set of bool: x) =
+	if x = {} then
+		"{}"
+	elseif x = {false} then
+		"{false}"
+	elseif x = {true} then
+		"{true}"
+	else
+		"{false, true}"
+	endif;
 
 function string: show(tuple($T): x) = "(" ++ show(x.1) ++ ",)";
 

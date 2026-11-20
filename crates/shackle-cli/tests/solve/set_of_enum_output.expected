@@ -1,6 +1,6 @@
 os = Red..Red;
-t = (Red..Red ∪ Blue..Blue, 1);
+t = (Red..Blue, 1);
 avs = [Green..Green, ∅];
-r = (s: Blue..Blue);
+r = (s: Green..Blue);
 vs = Red..Red ∪ Blue..Blue;
 ----------

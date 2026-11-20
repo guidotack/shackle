@@ -815,11 +815,12 @@ impl FromIterator<EnumRangeInclusive> for Set {
 			.sorted_by_key(|r| r.start);
 		if let Some(r) = iter.next() {
 			let mut ranges = vec![r];
-			// Combine overlapping ranges
+			// Combine overlapping and adjacent ranges, so that a set has one
+			// representation
 			for r in iter {
-				let last = ranges.last().unwrap();
-				if last.end >= r.start {
-					ranges.last_mut().unwrap().end = r.end
+				let last = ranges.last_mut().unwrap();
+				if last.end + 1 >= r.start {
+					last.end = last.end.max(r.end)
 				} else {
 					ranges.push(r)
 				}
@@ -849,7 +850,7 @@ impl FromIterator<RangeInclusive<f64>> for Set {
 			for r in iter {
 				let last = ranges.last().unwrap();
 				if last.end() >= r.start() {
-					*ranges.last_mut().unwrap() = *last.start()..=*r.end()
+					*ranges.last_mut().unwrap() = *last.start()..=last.end().max(*r.end())
 				} else {
 					ranges.push(r)
 				}
@@ -875,11 +876,12 @@ impl FromIterator<RangeInclusive<i64>> for Set {
 			.sorted_by_key(|r| *r.start());
 		if let Some(r) = iter.next() {
 			let mut ranges = vec![r];
-			// Combine overlapping ranges
+			// Combine overlapping and adjacent ranges, so that a set has one
+			// representation
 			for r in iter {
 				let last = ranges.last().unwrap();
-				if last.end() >= r.start() {
-					*ranges.last_mut().unwrap() = *last.start()..=*r.end()
+				if last.end().saturating_add(1) >= *r.start() {
+					*ranges.last_mut().unwrap() = *last.start()..=*last.end().max(r.end())
 				} else {
 					ranges.push(r)
 				}
